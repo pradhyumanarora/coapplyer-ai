@@ -349,12 +349,64 @@ class CoApplyerAIEasyApplier:
         browser_utils.scroll_slow(self.driver, scrollable_element, step=300, reverse=False)
         browser_utils.scroll_slow(self.driver, scrollable_element, step=300, reverse=True)
 
+    def _wait_for_easy_apply_surface(self, timeout_seconds: int = 10) -> None:
+        """Wait until Easy Apply dialog content or its footer actions are rendered."""
+        try:
+            self.driver.switch_to.default_content()
+        except Exception:
+            # Best-effort reset in case webdriver is already in default content.
+            pass
+
+        def _surface_ready(driver) -> bool:
+            has_container = bool(
+                driver.find_elements(By.CLASS_NAME, 'jobs-easy-apply-content')
+                or driver.find_elements(By.CLASS_NAME, 'jobs-easy-apply-form')
+                or driver.find_elements(By.CLASS_NAME, 'jobs-easy-apply-modal__content')
+                or driver.find_elements(By.CLASS_NAME, 'artdeco-modal__content')
+            )
+            has_dialog = bool(
+                driver.find_elements(
+                    By.XPATH,
+                    "//dialog | //*[@role='dialog'] | //*[@data-test-modal] | //div[contains(@class,'jobs-easy-apply-modal')]"
+                )
+            )
+            has_actions = bool(
+                driver.find_elements(
+                    By.XPATH,
+                    "//button["
+                    "not(@disabled) and ("
+                    "contains(@aria-label, 'Submit application') or "
+                    "contains(@aria-label, 'Continue to next step') or "
+                    "contains(@aria-label, 'Review your application') or "
+                    "@data-easy-apply-next-button or "
+                    "@data-live-test-easy-apply-next-button or "
+                    "@data-easy-apply-submit-button"
+                    ")"
+                    "]"
+                )
+            )
+            return has_container or has_dialog or has_actions
+
+        try:
+            WebDriverWait(self.driver, timeout_seconds).until(_surface_ready)
+        except TimeoutException:
+            logger.warning("Timed out waiting for Easy Apply dialog surface to render")
+
     def _fill_application_form(self, job_context : JobContext):
         job = job_context.job
         job_application = job_context.job_application
         logger.debug(f"Filling out application form for job: {job}")
+        failed_container_attempts = 0
         while True:
             if not self.fill_up(job_context):
+                failed_container_attempts += 1
+                if failed_container_attempts <= 2:
+                    logger.warning(
+                        f"Easy Apply form container unavailable (attempt {failed_container_attempts}); waiting and retrying"
+                    )
+                    utils.time_utils.short_sleep()
+                    self._wait_for_easy_apply_surface(timeout_seconds=8)
+                    continue
                 raise Exception("Easy Apply form container is unavailable; cannot continue to Next/Submit step")
             if self._next_or_submit():
                 ApplicationSaver.save(job_application)
@@ -526,9 +578,21 @@ class CoApplyerAIEasyApplier:
         logger.debug(f"Filling up form sections for job: {job}")
 
         try:
+            try:
+                self.driver.switch_to.default_content()
+            except Exception:
+                pass
+
+            self._wait_for_easy_apply_surface(timeout_seconds=8)
+
             # Try multiple selectors for the form container
             easy_apply_content = None
-            for css_class in ['jobs-easy-apply-content', 'jobs-easy-apply-form']:
+            for css_class in [
+                'jobs-easy-apply-content',
+                'jobs-easy-apply-form',
+                'jobs-easy-apply-modal__content',
+                'artdeco-modal__content',
+            ]:
                 elements = self.driver.find_elements(By.CLASS_NAME, css_class)
                 if elements:
                     easy_apply_content = elements[0]
@@ -539,12 +603,20 @@ class CoApplyerAIEasyApplier:
                 # Fallback: use the dialog element directly
                 dialogs = self.driver.find_elements(
                     By.XPATH,
-                    "//dialog | //*[@role='dialog'] | //*[@data-test-modal]"
+                    "//dialog | //*[@role='dialog'] | //*[@data-test-modal] | //div[contains(@class,'jobs-easy-apply-modal')]"
                 )
                 if dialogs:
                     easy_apply_content = dialogs[0]
                     logger.debug("Using dialog element as form container fallback")
                 else:
+                    form_roots = self.driver.find_elements(
+                        By.XPATH,
+                        "//form[.//button[@data-easy-apply-next-button or @data-live-test-easy-apply-next-button or @data-easy-apply-submit-button]]"
+                    )
+                    if form_roots:
+                        easy_apply_content = form_roots[0]
+                        logger.debug("Using form element as fallback container")
+
                     # Some LinkedIn steps render only footer actions with no form wrapper classes.
                     action_buttons = self.driver.find_elements(
                         By.XPATH,
@@ -565,7 +637,10 @@ class CoApplyerAIEasyApplier:
                         )
                         return True
 
-                    logger.error("Could not find Easy Apply form container")
+                    logger.error(
+                        "Could not find Easy Apply form container."
+                        f" dialog_count={len(dialogs)} form_count={len(form_roots)} action_count={len(action_buttons)}"
+                    )
                     return False
 
             input_elements = easy_apply_content.find_elements(By.CLASS_NAME, 'jobs-easy-apply-form-section__grouping')
