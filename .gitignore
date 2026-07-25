@@ -1,0 +1,53 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+virtual/
+
+# Test and coverage artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+
+# IDE/editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Runtime/log artifacts
+log/
+*.log
+
+# Project-generated outputs and local data
+data_folder/
+docs/
+
+# Local secrets and sensitive inputs
+data_folder/secrets.yaml
+config.py
+
+# Personal resume files
+*resume*.pdf
+*Resume*.pdf
+
+# Large/local browser profile data
+chrome_profile/
+.playwright-mcp/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Notebook checkpoints
+.ipynb_checkpoints/

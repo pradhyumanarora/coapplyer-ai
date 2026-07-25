@@ -1,0 +1,51 @@
+Maya Chen
+Austin, Texas
+Email: maya.chen@example.com | CoApplyerAI: maya-chen
+Portfolio: mayachen.dev | Phone: +1 512 555 0174
+
+Education
+Master's Degree in Data Science
+University of Texas at Austin (GPA: 3.8/4.0)
+Graduation Year: 2021
+
+Experience
+Senior Data Analyst
+LumenCart Analytics (04/2022 - Present)
+Location: Austin, TX | Industry: E-commerce SaaS
+
+Designed lifecycle dashboards used by product and marketing teams to monitor activation and retention
+Built forecasting models for weekly demand planning and reduced stockout incidents by 18 percent
+Collaborated with data engineering to improve event taxonomy and cut missing event rates by 42 percent
+
+Business Intelligence Analyst
+MetroPulse Retail (07/2019 - 03/2022)
+Location: Dallas, TX | Industry: Retail Operations
+
+Developed executive KPI reports for revenue, margin, and campaign performance
+Automated recurring spreadsheet processes with SQL and Python, saving 10 hours per week
+Partnered with regional managers to identify underperforming stores and prioritize interventions
+
+Projects
+Retention Signal Lab
+Analytics project for customer churn detection and proactive retention targeting
+Link: https://mayachen.dev/retention-signal-lab
+
+Catalog Health Monitor
+Data quality monitoring toolkit for SKU completeness and pricing anomalies
+Link: https://mayachen.dev/catalog-health-monitor
+
+Achievements
+Analytics Impact Award - Recognized for shipping the highest-value cross-team analytics initiative in 2023
+Reporting Automation Milestone - Eliminated 70 percent of manual monthly report preparation work
+
+Certifications
+Google Data Analytics Professional Certificate
+Microsoft Certified: Power BI Data Analyst Associate
+
+Languages
+English - Native
+Mandarin - Professional
+
+Interests
+Data Visualization, Urban Mobility, Trail Running, Coffee Brewing, Digital Photography
+

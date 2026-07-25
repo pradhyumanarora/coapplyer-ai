@@ -1,0 +1,141 @@
+personal_information:
+  name: "Avery"
+  surname: "Quinn"
+  date_of_birth: "08/09/1996"
+  country: "Canada"
+  city: "Vancouver"
+  zip_code: "V6B2W9"
+  address: "77 Harbor Street"
+  phone_prefix: "+1"
+  phone: "6045550182"
+  email: "avery.quinn@example.com"
+  github: "https://github.com/averyquinn"
+  linkedin: "https://www.linkedin.com/in/avery-quinn-dev/"
+  
+
+education_details:
+  - education_level: "Bachelor's Degree"
+    institution: "Pacific Technical University"
+    field_of_study: "Information Systems"
+    final_evaluation_grade: "3.7"
+    year_of_completion: "2018"
+    start_date: "2014"
+    additional_info:
+      exam:
+        Data Structures: "A-"
+        Database Systems: "A"
+        Statistics: "A"
+        Distributed Systems: "B+"
+        Human Computer Interaction: "A"
+
+experience_details:
+  - position: "Product Data Analyst"
+    company: "Northline Analytics"
+    employment_period: "03/2021 - Present"
+    location: "Vancouver, BC"
+    industry: "SaaS"
+    key_responsibilities:
+      - responsibility: "Built automated dashboards for weekly product KPIs and reduced manual reporting time by 60 percent"
+      - responsibility: "Partnered with product and engineering teams to define event tracking and improve data quality"
+      - responsibility: "Designed SQL models for activation and retention analysis across three product lines"
+    skills_acquired:
+      - "SQL"
+      - "Python"
+      - "Tableau"
+  - position: "Business Intelligence Associate"
+    company: "Beacon Retail Systems"
+    employment_period: "07/2018 - 02/2021"
+    location: "Calgary, AB"
+    industry: "Retail Technology"
+    key_responsibilities:
+      - responsibility: "Maintained data pipelines for sales and inventory reporting"
+      - responsibility: "Created executive reports used in monthly planning meetings"
+      - responsibility: "Introduced validation checks that cut spreadsheet errors by 35 percent"
+    skills_acquired:
+      - "Power BI"
+      - "ETL"
+      - "Data Validation"
+  - position: "Operations Analyst Intern"
+    company: "CityGrid Transit"
+    employment_period: "05/2017 - 08/2017"
+    location: "Toronto, ON"
+    industry: "Transportation"
+    key_responsibilities:
+      - responsibility: "Supported route performance analysis and operational benchmarking"
+      - responsibility: "Prepared weekly incident summaries for leadership review"
+      - responsibility: "Documented SOP updates for dispatch teams"
+    skills_acquired:
+      - "Excel"
+      - "Reporting"
+      - "Process Documentation"
+projects:
+  - name: "Churn Insight Board"
+    description: "End-to-end analytics project that forecasts churn risk and highlights retention opportunities by customer segment."
+    link: "https://averyquinn.dev/churn-insight-board"
+
+
+
+achievements:
+  - name: "Quarterly Impact Award"
+    description: "Recognized for delivering the highest-impact analytics initiative in Q4."
+  - name: "Data Quality Excellence"
+    description: "Led cleanup project that reduced reporting discrepancies by 40 percent."
+
+certifications:
+  - name: "Google Data Analytics Certificate"
+    description: "Completed advanced analytics coursework focused on SQL, spreadsheets, and visualization."
+  - name: "Microsoft Certified: Power BI Data Analyst Associate"
+    description: "Credential in data modeling, DAX, and dashboard design."
+
+languages:
+  - language: "English"
+    proficiency: "Native"
+  - language: "French"
+    proficiency: "Intermediate"
+
+interests:
+  - "Product Analytics"
+  - "Data Storytelling"
+  - "Public Transit Systems"
+  - "Trail Running"
+  - "Photography"
+
+availability:
+  notice_period: "3 weeks"
+
+salary_expectations:
+  salary_range_usd: "78000 - 95000"
+
+self_identification:
+  gender: "Non-binary"
+  pronouns: "They/Them"
+  veteran: "No"
+  disability: "No"
+  ethnicity: "Prefer not to say"
+
+legal_authorization:
+  eu_work_authorization: "No"
+  us_work_authorization: "No"
+  requires_us_visa: "No"
+  requires_us_sponsorship: "No"
+  requires_eu_visa: "Yes"
+  legally_allowed_to_work_in_eu: "No"
+  legally_allowed_to_work_in_us: "No"
+  requires_eu_sponsorship: "Yes"
+  canada_work_authorization: "Yes"
+  requires_canada_visa: "No"
+  legally_allowed_to_work_in_canada: "Yes"
+  requires_canada_sponsorship: "No"
+  uk_work_authorization: "No"
+  requires_uk_visa: "Yes"
+  legally_allowed_to_work_in_uk: "No"
+  requires_uk_sponsorship: "Yes"
+
+
+work_preferences:
+  remote_work: "No"
+  in_person_work: "Yes"
+  open_to_relocation: "No"
+  willing_to_complete_assessments: "Yes"
+  willing_to_undergo_drug_tests: "No"
+  willing_to_undergo_background_checks: "Yes"

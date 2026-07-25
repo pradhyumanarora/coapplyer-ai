@@ -1,0 +1,50 @@
+remote: false
+hybrid: true
+onsite: false
+
+experience_level:
+  internship: true
+  entry: false
+  associate: true
+  mid_senior_level: false
+  director: false
+  executive: false
+
+job_types:
+  full_time: false
+  contract: true
+  part_time: true
+  temporary: false
+  internship: true
+  other: false
+  volunteer: false
+
+date:
+  all_time: false
+  month: true
+  week: false
+  24_hours: false
+
+positions:
+  - Data Analyst
+  - Junior Platform Engineer
+
+locations:
+  - Netherlands
+  - Belgium
+
+apply_once_at_company: false
+
+distance: 25
+
+company_blacklist:
+  - Placeholder Holdings
+  - Demo Logistics
+
+title_blacklist:
+  - Senior Director
+  - VP
+
+location_blacklist:
+  - Antarctica
+
