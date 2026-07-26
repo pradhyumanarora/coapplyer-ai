@@ -182,20 +182,20 @@ def _get_chrome_profile_path() -> str | None:
 
 
 def _init_playwright_browser():
-    """Start playwright-mcp with the Chrome user profile for LinkedIn session."""
+    """Start playwright-mcp in headless Chromium mode (SSE/HTTP transport).
+
+    We do NOT use --user-data-dir or --browser=chrome because:
+    - --browser=chrome requires a running Chrome with CDP on port 9222
+    - Playwright's Chromium shares no session with the user's Chrome profile
+
+    Instead, authentication is handled by the authenticator: it navigates
+    playwright-mcp's Chromium to LinkedIn and prompts the user to log in
+    via that browser window.
+    """
     from src.browser_adapters.playwright_mcp_transport import PlaywrightMcpStdioSession
 
-    user_data_dir = _get_chrome_profile_path()
-    if user_data_dir:
-        logger.info("Playwright MCP: using Chrome profile at {}", user_data_dir)
-        # Use Chrome browser with user profile so LinkedIn session is preserved
-        session = PlaywrightMcpStdioSession(
-            extra_mcp_args=[f"--user-data-dir={user_data_dir}", "--browser=chrome"],
-        )
-    else:
-        logger.info("Playwright MCP: no Chrome profile found, using headless Chromium")
-        session = PlaywrightMcpStdioSession()
-
+    logger.info("Playwright MCP: starting headless Chromium (no Selenium dependency)")
+    session = PlaywrightMcpStdioSession()
     browser_adapter = create_browser_adapter("playwright", mcp_session=session)
     return None, browser_adapter  # no raw driver — everything goes through adapter
 

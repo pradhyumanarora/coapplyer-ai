@@ -484,6 +484,29 @@ class PlaywrightMcpStdioSession:
         _log.info("Playwright MCP server ready.")
         self.tool_schemas: dict[str, ToolSchema] = self._load_tool_schemas()
 
+    @staticmethod
+    def _kill_port(port: int) -> None:
+        """Kill any process listening on the given port (Windows + Unix)."""
+        try:
+            if sys.platform == "win32":
+                # netstat -ano to find PID, then taskkill
+                result = subprocess.run(
+                    ["netstat", "-ano"],
+                    capture_output=True, text=True, timeout=5
+                )
+                for line in result.stdout.splitlines():
+                    if f":{port} " in line and "LISTENING" in line:
+                        parts = line.split()
+                        pid = parts[-1]
+                        if pid.isdigit():
+                            subprocess.run(["taskkill", "/F", "/PID", pid],
+                                           capture_output=True, timeout=5)
+            else:
+                subprocess.run(["fuser", "-k", f"{port}/tcp"],
+                               capture_output=True, timeout=5)
+        except Exception:
+            pass  # Best-effort — don't fail startup if we can't kill
+
     def _start_sse_mode(
         self,
         *,
@@ -497,11 +520,17 @@ class PlaywrightMcpStdioSession:
         """Start playwright-mcp in HTTP/SSE mode on Windows.
 
         Protocol:
-          1. Start server with --port=N (no PIPE — avoids Windows buffering issue)
-          2. GET /sse → receive event:endpoint with sessionId
-          3. POST /sse?sessionId=<id> for all subsequent JSON-RPC calls
-          4. Responses arrive on the SSE stream
+          1. Kill any existing process on the port (stale from a previous run)
+          2. Start server with --port=N (no PIPE — avoids Windows buffering issue)
+          3. GET /sse → receive event:endpoint with sessionId
+          4. POST /sse?sessionId=<id> for all subsequent JSON-RPC calls
+          5. Responses arrive on the SSE stream
         """
+        # Kill stale server from previous run (e.g. started with wrong --cdp-endpoint)
+        log.info("Checking for stale playwright-mcp server on port %d...", port)
+        self._kill_port(port)
+        time.sleep(0.5)  # Give OS time to release the port
+
         server_args = [f"--port={port}"]
         if cdp_endpoint:
             server_args.append(f"--cdp-endpoint={cdp_endpoint}")

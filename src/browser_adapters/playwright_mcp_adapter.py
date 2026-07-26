@@ -54,7 +54,11 @@ class PlaywrightMcpBrowserAdapter(BrowserAdapter):
 
     def current_url(self) -> str:
         result = self._evaluate("return window.location.href;")
-        return str(result or "")
+        url = str(result or "")
+        # If MCP returns an error string (e.g. "### Error\n..."), return empty
+        if url.startswith("### Error") or url.startswith("Error:"):
+            return ""
+        return url
 
     def execute_script(self, script: str, *args: Any) -> Any:
         if args:
@@ -70,7 +74,12 @@ class PlaywrightMcpBrowserAdapter(BrowserAdapter):
 
     def find_elements(self, by: str, value: str) -> Iterable[Any]:
         selector = self._selector_from_locator(by, value)
-        count = int(self._evaluate(f"return __pw_query({json.dumps(selector)}, document).length;") or 0)
+        raw = self._evaluate(f"return __pw_query({json.dumps(selector)}, document).length;")
+        # Guard against error strings returned by MCP on browser failure
+        try:
+            count = int(raw or 0)
+        except (ValueError, TypeError):
+            count = 0
         return [PlaywrightMcpLocator(self.session, selector, index) for index in range(count)]
 
     def find_element(self, by: str, value: str) -> Any:
