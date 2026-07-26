@@ -159,6 +159,7 @@ class FileManager:
 
 # CDP port for Playwright MCP to attach to Chrome
 _PLAYWRIGHT_CDP_PORT = 9222
+_PLAYWRIGHT_CDP_HOST = "127.0.0.1"  # Use IPv4 explicitly — playwright-mcp uses ::1 (IPv6) by default which may differ
 
 
 def init_browser(cdp_port: int | None = None) -> webdriver.Chrome:
@@ -192,15 +193,20 @@ def create_browser_runtime(browser_engine: str):
         browser_adapter = create_browser_adapter(normalized_engine, selenium_driver=browser)
         return browser, browser_adapter
 
-    # Playwright MCP: launch Chrome with CDP, then attach MCP to it.
-    # This mirrors the ApplyPilot pattern and avoids Windows .cmd stdio issues.
+    # Playwright MCP: SSE/HTTP transport on Windows.
+    # Optionally attach to Selenium's Chrome via CDP so both share the same browser.
+    # If CDP attach fails, playwright-mcp falls back to its own headless browser.
     try:
-        cdp_endpoint = f"http://localhost:{_PLAYWRIGHT_CDP_PORT}"
+        # Use 127.0.0.1 (IPv4) explicitly — playwright-mcp may default to ::1 (IPv6)
+        cdp_endpoint = f"http://{_PLAYWRIGHT_CDP_HOST}:{_PLAYWRIGHT_CDP_PORT}"
         browser = init_browser(cdp_port=_PLAYWRIGHT_CDP_PORT)
-        logger.info("Chrome launched with CDP on port {}; connecting Playwright MCP...", _PLAYWRIGHT_CDP_PORT)
+        logger.info(
+            "Chrome launched with CDP on {}; connecting Playwright MCP...",
+            cdp_endpoint,
+        )
         browser_adapter = create_browser_adapter(normalized_engine, cdp_endpoint=cdp_endpoint)
         return browser, browser_adapter
-    except (FileNotFoundError, TimeoutError, OSError) as exc:
+    except (FileNotFoundError, TimeoutError, OSError, RuntimeError) as exc:
         logger.warning(
             "Playwright MCP runtime is unavailable ({}); falling back to Selenium.",
             exc,
