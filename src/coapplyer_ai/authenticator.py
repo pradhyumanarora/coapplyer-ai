@@ -85,27 +85,34 @@ class CoApplyerAIAuthenticator(ABC):
                 raise RuntimeError("Browser is not initialized for credential prompting")
 
             while True:
-                # Log current URL every 4 seconds and remind the user to log in
-                current_url = self._current_url()
-                logger.info(f"Please login on {current_url}")
-
-                # Check if the user is already on the feed page
+                # Check immediately before doing anything else
                 if self.is_logged_in:
                     logger.debug("Login successful, redirected to feed page.")
                     break
+
+                current_url = self._current_url()
+                logger.info(f"Please login on {current_url}")
+
+                # Wait briefly for the password field — if it never appears the
+                # browser already forwarded past the login page (e.g. existing
+                # session), so we just poll for feed URL instead.
+                if self.browser_adapter is not None:
+                    try:
+                        browser.wait_until(lambda: len(browser.find_elements(By.ID, "password")) > 0 or self.is_logged_in, 10)
+                    except TimeoutException:
+                        pass
                 else:
-                    if self.browser_adapter is not None:
-                        try:
-                            browser.wait_until(lambda: len(browser.find_elements(By.ID, "password")) > 0, 10)
-                            logger.debug("Password field detected, waiting for login completion.")
-                        except TimeoutException:
-                            logger.debug("Password field not detected yet; continuing to poll for login completion.")
-                    else:
-                        # Optionally wait for the password field (or any other element you expect on the login page)
+                    try:
                         WebDriverWait(self.driver, 10).until(
-                            EC.presence_of_element_located((By.ID, "password"))
+                            lambda d: d.find_elements(By.ID, "password") or self.is_logged_in
                         )
-                        logger.debug("Password field detected, waiting for login completion.")
+                    except TimeoutException:
+                        pass
+
+                # Re-check after the wait
+                if self.is_logged_in:
+                    logger.debug("Login successful, redirected to feed page.")
+                    break
 
                 time.sleep(check_interval)
                 elapsed_time += check_interval

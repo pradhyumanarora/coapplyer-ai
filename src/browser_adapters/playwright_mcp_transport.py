@@ -192,7 +192,10 @@ class PlaywrightMcpSseClient:
             pass
 
     def close(self) -> None:
-        self.notify("shutdown", {})
+        try:
+            self.notify("shutdown", {})
+        except Exception:
+            pass
         if self._sse_conn is not None:
             try:
                 self._sse_conn.close()
