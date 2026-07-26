@@ -82,23 +82,37 @@ class PlaywrightMcpSseClient:
         self._sse_thread.start()
 
     def _pump_sse(self) -> None:
-        """Read SSE messages from the open connection into the response queue."""
+        """Read SSE messages from the open connection into the response queue.
+
+        SSE format:
+            event: message      ← sets current event type
+            data: {...}         ← payload
+                                ← blank line resets state
+        Per SSE spec, the default event type is "message" when event: is omitted.
+        """
         if self._sse_conn is None:
             return
-        event_type = ""
+        event_type = "message"  # SSE default when event: line is absent
+        data_lines: list[str] = []
         try:
             for raw_line in self._sse_conn:
                 line = raw_line.decode("utf-8", errors="replace").rstrip("\n\r")
-                if line.startswith("event:"):
+                if not line:
+                    # Blank line = dispatch event
+                    if data_lines and event_type == "message":
+                        data = "\n".join(data_lines).strip()
+                        if data:
+                            try:
+                                self._response_queue.put(json.loads(data))
+                            except json.JSONDecodeError:
+                                pass
+                    # Reset
+                    event_type = "message"
+                    data_lines = []
+                elif line.startswith("event:"):
                     event_type = line[len("event:"):].strip()
-                elif line.startswith("data:") and event_type == "message":
-                    data = line[len("data:"):].strip()
-                    if data:
-                        try:
-                            self._response_queue.put(json.loads(data))
-                        except json.JSONDecodeError:
-                            pass
-                    event_type = ""
+                elif line.startswith("data:"):
+                    data_lines.append(line[len("data:"):].strip())
         except Exception:
             pass  # Connection closed on shutdown — expected
 
