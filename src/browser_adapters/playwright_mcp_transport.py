@@ -439,9 +439,10 @@ class PlaywrightMcpStdioSession:
         args: Iterable[str] | None = None,
         *,
         cdp_endpoint: str | None = None,
+        extra_mcp_args: list[str] | None = None,
         cwd: str | None = None,
         env: dict[str, str] | None = None,
-        timeout_seconds: int = 90,        # browser actions (navigate, click) can take 30-60s
+        timeout_seconds: int = 90,
         startup_timeout_seconds: int = 120,
         sse_port: int | None = None,
     ):
@@ -449,11 +450,14 @@ class PlaywrightMcpStdioSession:
         _log = _logging.getLogger(__name__)
 
         self._process: subprocess.Popen | None = None
+        self._args = list(args) if args is not None else None
+        self._extra_mcp_args: list[str] = list(extra_mcp_args) if extra_mcp_args else []
 
         if sys.platform == "win32" and command is None:
             # Windows: use HTTP/SSE mode to avoid subprocess PIPE issues
             port = sse_port or self._DEFAULT_SSE_PORT
             self.client = self._start_sse_mode(
+                extra_server_args=self._extra_mcp_args,
                 cdp_endpoint=cdp_endpoint,
                 port=port,
                 startup_timeout_seconds=startup_timeout_seconds,
@@ -483,6 +487,7 @@ class PlaywrightMcpStdioSession:
     def _start_sse_mode(
         self,
         *,
+        extra_server_args: list[str] | None = None,
         cdp_endpoint: str | None,
         port: int,
         startup_timeout_seconds: int,
@@ -502,6 +507,11 @@ class PlaywrightMcpStdioSession:
             server_args.append(f"--cdp-endpoint={cdp_endpoint}")
         else:
             server_args.append("--headless")
+        # Append any extra args (e.g. --user-data-dir for session sharing)
+        if extra_server_args:
+            # Filter out the npx package name if accidentally included
+            filtered = [a for a in extra_server_args if not a.startswith("@")]
+            server_args.extend(filtered)
 
         npx = shutil.which("npx.cmd") or shutil.which("npx")
         if not npx:

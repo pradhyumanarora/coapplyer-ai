@@ -39,12 +39,16 @@ class CoApplyerAIAuthenticator(ABC):
         return self.browser_adapter or self.driver
 
     def _current_url(self):
+        """Return current URL via the browser adapter or raw Selenium driver."""
         browser = self._browser()
         if browser is None:
             return ""
         if self.browser_adapter is not None:
-            return browser.current_url()
-        return browser.current_url
+            url = browser.current_url()
+            return str(url) if url is not None else ""
+        # raw Selenium driver
+        url = browser.current_url
+        return str(url) if url is not None else ""
 
     def start(self):
         browser = self._browser()
