@@ -534,8 +534,7 @@ class PlaywrightMcpStdioSession:
         server_args = [f"--port={port}"]
         if cdp_endpoint:
             server_args.append(f"--cdp-endpoint={cdp_endpoint}")
-        else:
-            server_args.append("--headless")
+        # No --headless flag: browser window is visible so user can log in to LinkedIn
         # Append any extra args (e.g. --user-data-dir for session sharing)
         if extra_server_args:
             # Filter out the npx package name if accidentally included
