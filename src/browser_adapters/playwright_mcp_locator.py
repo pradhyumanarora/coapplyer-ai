@@ -118,6 +118,22 @@ class PlaywrightMcpLocator:
     def select_option(self, label: str) -> None:
         self._evaluate(f"return __pw_select({self._json(self.selector)}, {self.root_expr}, {self.index}, {self._json(label)});")
 
+    def send_keys(self, value: str) -> None:
+        """Bridge for Selenium-style send_keys. Routes to fill() for text inputs.
+        For file inputs, sets the value via JS (works for generated/local paths)."""
+        tag = self.tag_name
+        field_type = self.get_attribute("type").lower()
+        if tag == "input" and field_type == "file":
+            # Native file dialog is not available via MCP; set value directly via JS.
+            self._evaluate(
+                f"(() => {{ const node = {self._element_expr()}; if (node) {{ "
+                f"Object.defineProperty(node, 'value', {{writable: true}}); "
+                f"node.value = {self._json(value)}; "
+                f"node.dispatchEvent(new Event('change', {{bubbles: true}})); }} }})()"
+            )
+        else:
+            self.fill(value)
+
     def evaluate(self, code: str) -> Any:
         return self._evaluate(f"(() => {{ const node = {self._element_expr()}; {code} }})()")
 

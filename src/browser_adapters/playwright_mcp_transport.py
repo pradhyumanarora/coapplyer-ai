@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 import queue
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Iterable
 
 
@@ -42,10 +43,12 @@ class JsonRpcStdioClient:
         self._stderr_lines: list[str] = []
         self._stdout_thread: threading.Thread | None = None
         self._stderr_thread: threading.Thread | None = None
+        self._starting: bool = False  # Guard against re-entrant start() calls
 
     def start(self) -> None:
-        if self._process is not None:
+        if self._process is not None or self._starting:
             return
+        self._starting = True
 
         try:
             self._process = subprocess.Popen(
@@ -63,38 +66,50 @@ class JsonRpcStdioClient:
                 "capabilities": {},
             }
 
+            # Send initialize once and wait — do not call _request_internal
+            # (which would re-enter start()) — use the lock-free internal path.
+            with self._lock:
+                self._request_id += 1
+                init_request_id = self._request_id
+                self._send_message({
+                    "jsonrpc": "2.0",
+                    "id": init_request_id,
+                    "method": "initialize",
+                    "params": init_params,
+                })
+
             started = False
             startup_deadline = time.time() + self.startup_timeout_seconds
-            last_error: Exception | None = None
 
             while time.time() < startup_deadline:
-                per_attempt_timeout = min(12, max(2, startup_deadline - time.time()))
+                remaining = max(0.1, startup_deadline - time.time())
                 try:
-                    self._request_internal(
-                        "initialize",
-                        init_params,
-                        timeout_seconds=per_attempt_timeout,
-                        close_on_timeout=False,
-                    )
+                    message = self._messages.get(timeout=min(remaining, 5.0))
+                except queue.Empty:
+                    continue
+                if message.get("id") == init_request_id:
+                    if "error" in message:
+                        raise RuntimeError(f"MCP initialize error: {message['error']}")
                     started = True
                     break
-                except TimeoutError as exc:
-                    last_error = exc
-                    if self._process is not None and self._process.poll() is not None:
-                        break
 
             if not started:
                 stderr_tail = " | ".join(self._stderr_lines[-10:])
                 exit_code = self._process.poll() if self._process is not None else None
                 self.close()
-                detail = stderr_tail or (str(last_error) if last_error else "no diagnostics")
+                detail = stderr_tail or "no diagnostics"
                 raise TimeoutError(
-                    f"Timed out waiting for MCP initialize after retries (exit={exit_code}). details: {detail}"
+                    f"Timed out waiting for MCP initialize (exit={exit_code}). details: {detail}"
                 )
 
             self.notify("initialized", {})
+            self._starting = False
         except FileNotFoundError as exc:
+            self._starting = False
             raise RuntimeError(f"Unable to start MCP command '{self.command}' (resolved to '{self._resolved_command}')") from exc
+        except Exception:
+            self._starting = False
+            raise
 
     def _start_reader_threads(self) -> None:
         if self._process is None:
@@ -129,6 +144,14 @@ class JsonRpcStdioClient:
                     self._stderr_lines = self._stderr_lines[-100:]
 
     def _resolve_command(self, command: str) -> str:
+        # On Windows, npm global binaries ship as .cmd wrappers.
+        # subprocess.Popen can execute .cmd files directly — prefer them
+        # over bare names which may resolve to .ps1 scripts that Popen cannot run.
+        if sys.platform == "win32" and not command.lower().endswith((".cmd", ".exe", ".bat")):
+            cmd_variant = command + ".cmd"
+            resolved_cmd = shutil.which(cmd_variant)
+            if resolved_cmd:
+                return resolved_cmd
         resolved = shutil.which(command)
         if resolved:
             return resolved
@@ -164,7 +187,8 @@ class JsonRpcStdioClient:
         *,
         close_on_timeout: bool = True,
     ) -> Any:
-        self.start()
+        if not self._starting:
+            self.start()
         with self._lock:
             self._request_id += 1
             request_id = self._request_id
@@ -241,25 +265,90 @@ class JsonRpcStdioClient:
 
 
 class PlaywrightMcpStdioSession:
+    """Stdio MCP session for @playwright/mcp.
+
+    Recommended usage (mirrors ApplyPilot pattern):
+      1. Launch Chrome externally with --remote-debugging-port=<port>
+      2. Pass cdp_endpoint="http://localhost:<port>" to connect instantly
+         (no browser launch delay, no Windows .cmd stdio issues)
+
+    Fallback: when cdp_endpoint is not given, launches in --headless mode
+    via npx, which works cross-platform including Windows.
+    """
+
+    # npx launch strategies in preference order
+    _NPX_STRATEGIES: list[tuple[str, list[str]]] = [
+        ("npx.cmd", ["@playwright/mcp"]),           # Windows: npx as .cmd
+        ("npx", ["@playwright/mcp"]),               # Unix/macOS
+        ("npx", ["--yes", "@playwright/mcp@latest"]),  # last resort: download
+    ]
+
     def __init__(
         self,
-        command: str = "npx",
+        command: str | None = None,
         args: Iterable[str] | None = None,
         *,
+        cdp_endpoint: str | None = None,
         cwd: str | None = None,
         env: dict[str, str] | None = None,
         timeout_seconds: int = 30,
+        startup_timeout_seconds: int = 120,
     ):
+        import logging as _logging
+        _log = _logging.getLogger(__name__)
+
+        resolved_command, resolved_args = self._resolve_launch(
+            command, args, cdp_endpoint, _log
+        )
+
+        _log.info(
+            "Starting Playwright MCP server: %s %s",
+            resolved_command,
+            " ".join(resolved_args),
+        )
         self.client = JsonRpcStdioClient(
-            command,
-            args or ["--yes", "@playwright/mcp@latest"],
+            resolved_command,
+            resolved_args,
             cwd=cwd,
             env=env,
             timeout_seconds=timeout_seconds,
-            startup_timeout_seconds=10,
+            startup_timeout_seconds=startup_timeout_seconds,
         )
         self.client.start()
+        _log.info("Playwright MCP server started successfully.")
         self.tool_schemas: dict[str, ToolSchema] = self._load_tool_schemas()
+
+    @staticmethod
+    def _resolve_launch(
+        command: str | None,
+        args: Iterable[str] | None,
+        cdp_endpoint: str | None,
+        log: Any,
+    ) -> tuple[str, list[str]]:
+        """Return (command, args) for the best available launch strategy."""
+        if args is not None:
+            server_args = list(args)
+        elif cdp_endpoint:
+            # CDP mode: attach to existing Chrome — instant, no browser launch
+            server_args = [f"--cdp-endpoint={cdp_endpoint}"]
+        else:
+            # Headless mode: let playwright-mcp manage its own browser
+            server_args = ["--headless"]
+
+        if command is not None:
+            return command, server_args
+
+        for candidate_cmd, candidate_prefix in PlaywrightMcpStdioSession._NPX_STRATEGIES:
+            if shutil.which(candidate_cmd):
+                full_args = candidate_prefix + server_args
+                log.debug("Playwright MCP launch: %s %s", candidate_cmd, " ".join(full_args))
+                return candidate_cmd, full_args
+
+        # Absolute fallback
+        fallback_cmd, fallback_prefix = PlaywrightMcpStdioSession._NPX_STRATEGIES[-1]
+        full_args = fallback_prefix + server_args
+        log.warning("npx not found on PATH; using '%s %s'", fallback_cmd, " ".join(full_args))
+        return fallback_cmd, full_args
 
     def close(self) -> None:
         self.client.close()
@@ -305,7 +394,6 @@ class PlaywrightMcpStdioSession:
             if name in self.tool_schemas:
                 return name
 
-        lower_names = [name.lower() for name in self.tool_schemas]
         for candidate in candidate_names:
             candidate_lower = candidate.lower()
             for tool_name in self.tool_schemas:

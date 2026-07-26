@@ -8,7 +8,12 @@ from src.browser_adapters.playwright_mcp_transport import PlaywrightMcpStdioSess
 from src.browser_adapters.selenium_adapter import SeleniumBrowserAdapter
 
 
-def create_browser_adapter(engine: str, selenium_driver: Any | None = None, mcp_session: Any | None = None) -> BrowserAdapter:
+def create_browser_adapter(
+    engine: str,
+    selenium_driver: Any | None = None,
+    mcp_session: Any | None = None,
+    cdp_endpoint: str | None = None,
+) -> BrowserAdapter:
     normalized_engine = (engine or "selenium").strip().lower()
 
     if normalized_engine == "selenium":
@@ -18,7 +23,7 @@ def create_browser_adapter(engine: str, selenium_driver: Any | None = None, mcp_
 
     if normalized_engine in {"playwright", "playwright_mcp", "playwright-mcp"}:
         if mcp_session is None:
-            mcp_session = PlaywrightMcpStdioSession()
+            mcp_session = PlaywrightMcpStdioSession(cdp_endpoint=cdp_endpoint)
         return PlaywrightMcpBrowserAdapter(mcp_session)
 
     raise ValueError(f"Unsupported browser engine: {engine}")

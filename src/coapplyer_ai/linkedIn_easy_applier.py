@@ -12,7 +12,6 @@ from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from selenium.common.exceptions import NoSuchElementException, TimeoutException
 from reportlab.pdfbase.pdfmetrics import stringWidth
-from selenium.webdriver import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webelement import WebElement
 
@@ -494,11 +493,23 @@ function* walk(root){
 
     def _sdui_fill_geo(self, field_id: str, city_text: str) -> None:
             logger.debug(f"Filling SDUI GEO field {field_id} with city text: {city_text}")
+            # Focus the field via JS, then type via the browser adapter (works for both Selenium and Playwright MCP).
             self.browser.execute_script(self.SDUI_WALKER + """
                 const el=[...walk(document)].find(e=>e.id===arguments[0]);
                 if(el) el.focus();
             """, field_id)
-            ActionChains(self.driver).send_keys(city_text).perform()
+            if self.driver is not None:
+                from selenium.webdriver import ActionChains as _ActionChains
+                _ActionChains(self.driver).send_keys(city_text).perform()
+            else:
+                # Playwright MCP path: type into the focused field via JS input simulation.
+                self.browser.execute_script(self.SDUI_WALKER + """
+                    const el=[...walk(document)].find(e=>e.id===arguments[0]);
+                    if(!el) return;
+                    el.value = arguments[1];
+                    el.dispatchEvent(new Event('input', {bubbles:true}));
+                    el.dispatchEvent(new Event('change', {bubbles:true}));
+                """, field_id, city_text)
             time.sleep(2.5)
             pick_result = self.browser.execute_script(self.SDUI_WALKER + """
                 const q=(arguments[0]||'').toLowerCase();
@@ -1049,17 +1060,34 @@ function* walk(root){
 
         file_upload_elements = self.browser.find_elements(By.XPATH, "//input[@type='file']")
         for element in file_upload_elements:
-            parent = element.find_element(By.XPATH, "..")
+            # Get parent label text for resume-or-cover detection.
+            # Use adapter-aware parent traversal: try locator's find_element first, fall back to JS.
+            try:
+                parent = element.find_element(By.XPATH, "..")
+                parent_text = (parent.text if hasattr(parent, "text") else "").lower()
+            except Exception:
+                try:
+                    parent_text = str(self.browser.execute_script(
+                        "const el = arguments[0]; return el && el.parentElement ? el.parentElement.innerText : '';",
+                        element,
+                    ) or "").lower()
+                except Exception:
+                    parent_text = ""
+
             self.browser.execute_script("arguments[0].classList.remove('hidden')", element)
 
-            output = self.gpt_answerer.resume_or_cover(parent.text.lower())
+            output = self.gpt_answerer.resume_or_cover(parent_text)
             if 'resume' in output:
                 logger.debug("Uploading resume")
                 if self.resume_path is not None and self.resume_path.resolve().is_file():
-                    element.send_keys(str(self.resume_path.resolve()))
-                    job_context.job.resume_path = str(self.resume_path.resolve())
-                    job_context.job_application.resume_path = str(self.resume_path.resolve())
-                    logger.debug(f"Resume uploaded from path: {self.resume_path.resolve()}")
+                    _upload_path = str(self.resume_path.resolve())
+                    if hasattr(element, "send_keys"):
+                        element.send_keys(_upload_path)
+                    else:
+                        self.browser.fill_text(element, _upload_path)
+                    job_context.job.resume_path = _upload_path
+                    job_context.job_application.resume_path = _upload_path
+                    logger.debug(f"Resume uploaded from path: {_upload_path}")
                 else:
                     logger.debug("Resume path not found or invalid, generating new resume")
                     self._create_and_upload_resume(element, job_context)
@@ -1143,9 +1171,13 @@ function* walk(root){
 
         try:
             logger.debug(f"Uploading resume from path: {file_path_pdf}")
-            element.send_keys(os.path.abspath(file_path_pdf))
-            job.resume_path = os.path.abspath(file_path_pdf)
-            job_application.resume_path = os.path.abspath(file_path_pdf)
+            _abs_path = os.path.abspath(file_path_pdf)
+            if hasattr(element, "send_keys"):
+                element.send_keys(_abs_path)
+            else:
+                self.browser.fill_text(element, _abs_path)
+            job.resume_path = _abs_path
+            job_application.resume_path = _abs_path
             time.sleep(2)
             logger.debug(f"Resume created and uploaded successfully: {file_path_pdf}")
         except Exception as e:
@@ -1243,11 +1275,14 @@ function* walk(root){
             raise ValueError("Cover letter file format is not allowed. Only PDF, DOC, and DOCX formats are supported.")
 
         try:
-
             logger.debug(f"Uploading cover letter from path: {file_path_pdf}")
-            element.send_keys(os.path.abspath(file_path_pdf))
-            job.cover_letter_path = os.path.abspath(file_path_pdf)
-            job_context.job_application.cover_letter_path = os.path.abspath(file_path_pdf)
+            _abs_path = os.path.abspath(file_path_pdf)
+            if hasattr(element, "send_keys"):
+                element.send_keys(_abs_path)
+            else:
+                self.browser.fill_text(element, _abs_path)
+            job.cover_letter_path = _abs_path
+            job_context.job_application.cover_letter_path = _abs_path
             time.sleep(2)
             logger.debug(f"Cover letter created and uploaded successfully: {file_path_pdf}")
         except Exception as e:

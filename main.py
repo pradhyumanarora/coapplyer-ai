@@ -157,10 +157,16 @@ class FileManager:
 
         return result
 
-def init_browser() -> webdriver.Chrome:
+# CDP port for Playwright MCP to attach to Chrome
+_PLAYWRIGHT_CDP_PORT = 9222
+
+
+def init_browser(cdp_port: int | None = None) -> webdriver.Chrome:
     service = ChromeService(ChromeDriverManager().install())
     try:
         options = chrome_browser_options(use_profile=True)
+        if cdp_port is not None:
+            options.add_argument(f"--remote-debugging-port={cdp_port}")
         return webdriver.Chrome(service=service, options=options)
     except SessionNotCreatedException as e:
         logger.warning(
@@ -168,6 +174,8 @@ def init_browser() -> webdriver.Chrome:
             e,
         )
         options = chrome_browser_options(use_profile=False)
+        if cdp_port is not None:
+            options.add_argument(f"--remote-debugging-port={cdp_port}")
         return webdriver.Chrome(service=service, options=options)
     except Exception as e:
         raise RuntimeError(f"Failed to initialize browser: {str(e)}")
@@ -184,9 +192,14 @@ def create_browser_runtime(browser_engine: str):
         browser_adapter = create_browser_adapter(normalized_engine, selenium_driver=browser)
         return browser, browser_adapter
 
+    # Playwright MCP: launch Chrome with CDP, then attach MCP to it.
+    # This mirrors the ApplyPilot pattern and avoids Windows .cmd stdio issues.
     try:
-        browser_adapter = create_browser_adapter(normalized_engine)
-        return None, browser_adapter
+        cdp_endpoint = f"http://localhost:{_PLAYWRIGHT_CDP_PORT}"
+        browser = init_browser(cdp_port=_PLAYWRIGHT_CDP_PORT)
+        logger.info("Chrome launched with CDP on port {}; connecting Playwright MCP...", _PLAYWRIGHT_CDP_PORT)
+        browser_adapter = create_browser_adapter(normalized_engine, cdp_endpoint=cdp_endpoint)
+        return browser, browser_adapter
     except (FileNotFoundError, TimeoutError, OSError) as exc:
         logger.warning(
             "Playwright MCP runtime is unavailable ({}); falling back to Selenium.",

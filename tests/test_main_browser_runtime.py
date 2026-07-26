@@ -11,16 +11,22 @@ def test_resolve_browser_engine_keeps_configured_default():
     assert main.resolve_browser_engine(False, configured_engine="playwright") == "playwright"
 
 
-def test_create_browser_runtime_uses_playwright_without_selenium(mocker):
+def test_create_browser_runtime_uses_playwright_with_cdp(mocker):
+    """Playwright MCP runtime launches Chrome with CDP and attaches MCP to it."""
+    driver = mock.Mock()
     adapter = mock.Mock()
+    init_browser_spy = mocker.patch("main.init_browser", return_value=driver)
     create_adapter_spy = mocker.patch("main.create_browser_adapter", return_value=adapter)
-    init_browser_spy = mocker.patch("main.init_browser")
 
     browser, browser_adapter = main.create_browser_runtime("playwright")
 
-    init_browser_spy.assert_not_called()
-    create_adapter_spy.assert_called_once_with("playwright")
-    assert browser is None
+    # Chrome is launched with the CDP port so playwright-mcp can attach
+    init_browser_spy.assert_called_once_with(cdp_port=main._PLAYWRIGHT_CDP_PORT)
+    # Adapter is created with the CDP endpoint (not the selenium_driver)
+    create_adapter_spy.assert_called_once_with(
+        "playwright", cdp_endpoint=f"http://localhost:{main._PLAYWRIGHT_CDP_PORT}"
+    )
+    assert browser is driver
     assert browser_adapter is adapter
 
 
@@ -50,7 +56,8 @@ def test_create_browser_runtime_falls_back_to_selenium_when_playwright_missing(m
     browser, browser_adapter = main.create_browser_runtime("playwright")
 
     assert create_adapter_spy.call_count == 2
-    init_browser_spy.assert_called_once()
+    # init_browser called twice: once with CDP port (Playwright attempt), once without (Selenium fallback)
+    assert init_browser_spy.call_count == 2
     assert browser is driver
     assert browser_adapter is adapter
 
