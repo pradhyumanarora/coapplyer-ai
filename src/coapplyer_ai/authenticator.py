@@ -38,17 +38,19 @@ class CoApplyerAIAuthenticator(ABC):
     def _browser(self):
         return self.browser_adapter or self.driver
 
-    def _current_url(self):
+    def _current_url(self) -> str:
         """Return current URL via the browser adapter or raw Selenium driver."""
         browser = self._browser()
         if browser is None:
             return ""
-        if self.browser_adapter is not None:
-            url = browser.current_url()
+        try:
+            if self.browser_adapter is not None:
+                url = browser.current_url()
+            else:
+                url = browser.current_url
             return str(url) if url is not None else ""
-        # raw Selenium driver
-        url = browser.current_url
-        return str(url) if url is not None else ""
+        except Exception:
+            return ""
 
     def start(self):
         browser = self._browser()
@@ -57,6 +59,11 @@ class CoApplyerAIAuthenticator(ABC):
 
         logger.info("Starting browser to log in to CoApplyer AI.")
         browser.get(self.home_url)
+        # Wait up to 5s for LinkedIn to redirect to the feed if already logged in
+        for _ in range(10):
+            if self.is_logged_in:
+                break
+            time.sleep(0.5)
         if self.is_logged_in:
             logger.info("User is already logged in. Skipping login process.")
             return
@@ -158,9 +165,16 @@ class LinkedInAuthenticator(CoApplyerAIAuthenticator):
     
     @property
     def is_logged_in(self):
-        keywords = ['feed', 'mynetwork','jobs','messaging','notifications']
+        keywords = ['feed', 'mynetwork', 'jobs', 'messaging', 'notifications']
         current_url = self._current_url()
-        return any(item in current_url for item in keywords) and 'linkedin.com' in current_url
+        if 'linkedin.com' not in current_url:
+            return False
+        # Root URL (https://www.linkedin.com/ or https://www.linkedin.com) means logged in
+        # — LinkedIn redirects anonymous users to /login, not to the root.
+        stripped = current_url.rstrip("/")
+        if stripped in ("https://www.linkedin.com", "https://linkedin.com"):
+            return True
+        return any(item in current_url for item in keywords)
 
     def __init__(self, driver=None, browser_adapter: BrowserAdapter | None = None):
         super().__init__(driver, browser_adapter=browser_adapter)

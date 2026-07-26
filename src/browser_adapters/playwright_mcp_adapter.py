@@ -53,12 +53,30 @@ class PlaywrightMcpBrowserAdapter(BrowserAdapter):
         self.session.call_tool("browser_navigate", "navigate", url=self.current_url())
 
     def current_url(self) -> str:
-        result = self._evaluate("return window.location.href;")
-        url = str(result or "")
-        # If MCP returns an error string (e.g. "### Error\n..."), return empty
-        if url.startswith("### Error") or url.startswith("Error:"):
-            return ""
-        return url
+        """Get the current page URL via MCP browser_navigate snapshot or evaluate."""
+        # Try browser_evaluate first
+        try:
+            result = self._evaluate("return window.location.href;")
+            url = str(result or "")
+            if url and not url.startswith("### Error") and not url.startswith("Error:") and url.startswith("http"):
+                return url
+        except Exception:
+            pass
+
+        # Fallback: parse URL from the last browser_navigate snapshot text
+        # The navigate result includes "Page URL: <url>" in its text
+        try:
+            snapshot = self.session.call_tool("browser_snapshot", "snapshot")
+            snap_str = str(snapshot or "")
+            for line in snap_str.splitlines():
+                if "Page URL:" in line or "- URL:" in line:
+                    url = line.split(":", 1)[1].strip()
+                    if url.startswith("http"):
+                        return url
+        except Exception:
+            pass
+
+        return ""
 
     def execute_script(self, script: str, *args: Any) -> Any:
         if args:

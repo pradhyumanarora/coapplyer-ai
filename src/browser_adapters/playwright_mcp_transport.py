@@ -636,9 +636,28 @@ class PlaywrightMcpStdioSession:
         return fallback_cmd, full_args
 
     def close(self) -> None:
-        self.client.close()
-        if self._process is not None and self._process.poll() is None:
-            self._process.terminate()
+        try:
+            self.client.close()
+        except Exception:
+            pass
+        if self._process is not None:
+            pid = self._process.pid
+            try:
+                if self._process.poll() is None:
+                    if sys.platform == "win32":
+                        # Kill the entire process tree (npx + Chrome children)
+                        subprocess.run(
+                            ["taskkill", "/F", "/T", "/PID", str(pid)],
+                            capture_output=True, timeout=5,
+                        )
+                    else:
+                        self._process.terminate()
+                    try:
+                        self._process.wait(timeout=3)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             self._process = None
 
     def _load_tool_schemas(self) -> dict[str, ToolSchema]:
