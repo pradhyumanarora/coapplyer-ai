@@ -427,7 +427,7 @@ class PlaywrightMcpStdioSession:
         cdp_endpoint: str | None = None,
         cwd: str | None = None,
         env: dict[str, str] | None = None,
-        timeout_seconds: int = 30,
+        timeout_seconds: int = 90,        # browser actions (navigate, click) can take 30-60s
         startup_timeout_seconds: int = 120,
         sse_port: int | None = None,
     ):
