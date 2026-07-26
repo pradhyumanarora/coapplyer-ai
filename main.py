@@ -157,17 +157,10 @@ class FileManager:
 
         return result
 
-# CDP port for Playwright MCP to attach to Chrome
-_PLAYWRIGHT_CDP_PORT = 9222
-_PLAYWRIGHT_CDP_HOST = "127.0.0.1"  # Use IPv4 explicitly — playwright-mcp uses ::1 (IPv6) by default which may differ
-
-
-def init_browser(cdp_port: int | None = None) -> webdriver.Chrome:
+def init_browser() -> webdriver.Chrome:
     service = ChromeService(ChromeDriverManager().install())
     try:
         options = chrome_browser_options(use_profile=True)
-        if cdp_port is not None:
-            options.add_argument(f"--remote-debugging-port={cdp_port}")
         return webdriver.Chrome(service=service, options=options)
     except SessionNotCreatedException as e:
         logger.warning(
@@ -175,8 +168,6 @@ def init_browser(cdp_port: int | None = None) -> webdriver.Chrome:
             e,
         )
         options = chrome_browser_options(use_profile=False)
-        if cdp_port is not None:
-            options.add_argument(f"--remote-debugging-port={cdp_port}")
         return webdriver.Chrome(service=service, options=options)
     except Exception as e:
         raise RuntimeError(f"Failed to initialize browser: {str(e)}")
@@ -193,18 +184,13 @@ def create_browser_runtime(browser_engine: str):
         browser_adapter = create_browser_adapter(normalized_engine, selenium_driver=browser)
         return browser, browser_adapter
 
-    # Playwright MCP: SSE/HTTP transport on Windows.
-    # Optionally attach to Selenium's Chrome via CDP so both share the same browser.
-    # If CDP attach fails, playwright-mcp falls back to its own headless browser.
+    # Playwright MCP: uses SSE/HTTP transport (avoids Windows .cmd stdio issues).
+    # playwright-mcp manages its own headless browser; Selenium Chrome is not needed.
+    # The user-visible Chrome (with session cookies) is launched separately for auth display.
     try:
-        # Use 127.0.0.1 (IPv4) explicitly — playwright-mcp may default to ::1 (IPv6)
-        cdp_endpoint = f"http://{_PLAYWRIGHT_CDP_HOST}:{_PLAYWRIGHT_CDP_PORT}"
-        browser = init_browser(cdp_port=_PLAYWRIGHT_CDP_PORT)
-        logger.info(
-            "Chrome launched with CDP on {}; connecting Playwright MCP...",
-            cdp_endpoint,
-        )
-        browser_adapter = create_browser_adapter(normalized_engine, cdp_endpoint=cdp_endpoint)
+        browser = init_browser()   # visible Chrome for user login confirmation
+        logger.info("Starting Playwright MCP (headless) + visible Chrome for login display...")
+        browser_adapter = create_browser_adapter(normalized_engine)  # no cdp_endpoint — MCP uses own browser
         return browser, browser_adapter
     except (FileNotFoundError, TimeoutError, OSError, RuntimeError) as exc:
         logger.warning(
