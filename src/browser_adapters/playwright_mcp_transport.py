@@ -51,7 +51,13 @@ class PlaywrightMcpSseClient:
         self._sse_conn: Any = None
 
     def connect(self, startup_deadline: float) -> None:
-        """Establish SSE session and start background reader thread."""
+        """Establish SSE session and start background reader thread.
+
+        The SSE connection must NOT have a socket read timeout because
+        browser tool calls (browser_navigate to LinkedIn etc.) can take
+        30-90 seconds. We use a short timeout only for the initial connect
+        attempt, then clear it to allow unbounded reads.
+        """
         sse_req = urllib.request.Request(
             f"{self.base_url}/sse",
             headers={"Accept": "text/event-stream"},
@@ -59,6 +65,16 @@ class PlaywrightMcpSseClient:
         while time.time() < startup_deadline:
             try:
                 self._sse_conn = urllib.request.urlopen(sse_req, timeout=5)
+                # CRITICAL: remove the socket read timeout after connecting.
+                # urllib.request.urlopen(timeout=5) sets a socket-level timeout
+                # that applies to EVERY subsequent read on the socket.
+                # Long browser_navigate calls take 10-90s → socket times out
+                # mid-stream, killing the SSE connection silently.
+                if hasattr(self._sse_conn, "fp") and hasattr(self._sse_conn.fp, "raw"):
+                    try:
+                        self._sse_conn.fp.raw._sock.settimeout(None)
+                    except Exception:
+                        pass
                 break
             except Exception:
                 time.sleep(0.5)
