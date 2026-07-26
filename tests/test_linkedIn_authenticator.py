@@ -40,6 +40,22 @@ def test_handle_login(mocker, authenticator):
     authenticator.handle_security_checks.assert_called_once()
 
 
+def test_start_uses_adapter_when_provided(mocker):
+    driver = mocker.Mock()
+    browser_adapter = mocker.Mock()
+    browser_adapter.current_url.return_value = "https://www.linkedin.com/feed/"
+    authenticator = get_authenticator(driver, platform='linkedin', browser_adapter=browser_adapter)
+
+    mocker.patch.object(authenticator, 'prompt_for_credentials')
+    mocker.patch.object(authenticator, 'handle_security_checks')
+
+    authenticator.start()
+
+    browser_adapter.get.assert_called_once_with('https://www.linkedin.com')
+    authenticator.prompt_for_credentials.assert_not_called()
+    authenticator.handle_security_checks.assert_not_called()
+
+
 def test_enter_credentials_success(mocker, authenticator):
     """Test entering credentials."""
     email_mock = mocker.Mock()

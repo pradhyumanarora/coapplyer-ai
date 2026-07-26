@@ -14,10 +14,7 @@ from selenium.common.exceptions import NoSuchElementException, TimeoutException
 from reportlab.pdfbase.pdfmetrics import stringWidth
 from selenium.webdriver import ActionChains
 from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.remote.webelement import WebElement
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import Select, WebDriverWait
 
 from jobContext import JobContext
 from job_application import JobApplication
@@ -26,7 +23,8 @@ import src.utils as utils  # noqa: F401
 from src.logging import logger
 from src.job import Job
 from src.coapplyer_ai.llm.llm_manager import GPTAnswerer
-from src.utils import browser_utils
+from src.browser_adapters import BrowserAdapter, SeleniumBrowserAdapter
+from app_config import REQUIRE_HUMAN_CONFIRMATION_FOR_SUBMIT
 import src.utils.time_utils
 
 def question_already_exists_in_data(question: str, data: List[dict]) -> bool:
@@ -42,16 +40,31 @@ def question_already_exists_in_data(question: str, data: List[dict]) -> bool:
         """
         return any(item['question'] == question for item in data)
 
+
+class SubmitConfirmationRequired(Exception):
+    pass
+
 class CoApplyerAIEasyApplier:
     STATUS_SUBMITTED = "submitted"
     STATUS_SKIPPED_NOT_SUITABLE = "skipped_not_suitable"
+    STATUS_AWAITING_HUMAN_CONFIRMATION = "awaiting_human_confirmation"
+    SDUI_WALKER = """
+function* walk(root){
+    for(const el of root.querySelectorAll('*')){
+        yield el;
+        if(el.shadowRoot) yield* walk(el.shadowRoot);
+    }
+}
+"""
 
     def __init__(self, driver: Any, resume_dir: Optional[str], set_old_answers: List[Tuple[str, str, str]],
-                 gpt_answerer: GPTAnswerer, resume_generator_manager, disable_suitability_filter: bool = False):
+                 gpt_answerer: GPTAnswerer, resume_generator_manager, disable_suitability_filter: bool = False,
+                 browser_adapter: Optional[BrowserAdapter] = None):
         logger.debug("Initializing CoApplyerAIEasyApplier")
         if resume_dir is None or not os.path.exists(resume_dir):
             resume_dir = None
         self.driver = driver
+        self.browser = browser_adapter or SeleniumBrowserAdapter(driver)
         self.resume_path = resume_dir
         self.set_old_answers = set_old_answers
         self.gpt_answerer = gpt_answerer
@@ -59,6 +72,7 @@ class CoApplyerAIEasyApplier:
         self.disable_suitability_filter = disable_suitability_filter
         self.all_data = self._load_questions_from_json()
         self.current_job = None
+        self._easy_apply_mode = "classic"
 
         logger.debug("CoApplyerAIEasyApplier initialized successfully")
 
@@ -87,16 +101,16 @@ class CoApplyerAIEasyApplier:
     def check_for_premium_redirect(self, job_context: JobContext, max_attempts=3):
 
         job = job_context.job
-        current_url = self.driver.current_url
+        current_url = self.browser.current_url()
         attempts = 0
 
         while "linkedin.com/premium" in current_url and attempts < max_attempts:
             logger.warning("Redirected to linkedIn Premium page. Attempting to return to job page.")
             attempts += 1
 
-            self.driver.get(job.link)
+            self.browser.get(job.link)
             time.sleep(2)
-            current_url = self.driver.current_url
+            current_url = self.browser.current_url()
 
         if "linkedin.com/premium" in current_url:
             logger.error(f"Failed to return to job page after {max_attempts} attempts. Cannot apply for the job.")
@@ -129,7 +143,7 @@ class CoApplyerAIEasyApplier:
         job_context.job = job
         job_context.job_application = JobApplication(job)
         try:
-            self.driver.get(job.link)
+            self.browser.get(job.link)
             logger.debug(f"Navigated to job link: {job.link}")
         except Exception as e:
             logger.error(f"Failed to navigate to job link: {job.link}, error: {str(e)}")
@@ -140,7 +154,7 @@ class CoApplyerAIEasyApplier:
 
         try:
 
-            self.driver.execute_script("document.activeElement.blur();")
+            self.browser.execute_script("document.activeElement.blur();")
             logger.debug("Focus removed from the active element")
 
             self.check_for_premium_redirect(job_context)
@@ -175,14 +189,17 @@ class CoApplyerAIEasyApplier:
                     return self.STATUS_SKIPPED_NOT_SUITABLE
 
             logger.debug("Attempting to click 'Easy Apply' button")
-            actions = ActionChains(self.driver)
-            actions.move_to_element(easy_apply_button).click().perform()
+            self.browser.click(easy_apply_button, hover_first=True)
             logger.debug("'Easy Apply' button clicked successfully")
 
             logger.debug("Filling out application form")
             self._fill_application_form(job_context)
             logger.debug(f"Job application process completed successfully for job: {job}")
             return self.STATUS_SUBMITTED
+
+        except SubmitConfirmationRequired:
+            logger.info(f"Final submit reached for {job.title}; awaiting human confirmation")
+            return self.STATUS_AWAITING_HUMAN_CONFIRMATION
 
         except Exception as e:
 
@@ -202,6 +219,14 @@ class CoApplyerAIEasyApplier:
         # Old LinkedIn UI: Easy Apply is a <button> with aria-label="Easy Apply to <job> at <company>"
         # Both UIs need to be supported.
         search_methods = [
+            {
+                'description': "classic Easy Apply button by jobs-apply-button class",
+                'css': 'button.jobs-apply-button'
+            },
+            {
+                'description': "SDUI Easy Apply anchor by openSDUIApplyFlow href",
+                'css': 'a[href*=\'openSDUIApplyFlow=true\']'
+            },
             {
                 'description': "anchor or button with aria-label containing 'Easy Apply' (both UIs)",
                 'find_elements': True,
@@ -235,13 +260,20 @@ class CoApplyerAIEasyApplier:
                 try:
                     logger.debug(f"Attempting search using {method['description']}")
 
+                    if method.get('css'):
+                        button = self.browser.wait_for_presence(By.CSS_SELECTOR, method['css'], 10)
+                        self.browser.wait_for_visible(button, 10)
+                        self.browser.wait_for_clickable(button, 10)
+                        logger.debug("Found 'Easy Apply' button, attempting to click")
+                        return button
+
                     if method.get('find_elements'):
-                        buttons = self.driver.find_elements(By.XPATH, method['xpath'])
+                        buttons = self.browser.find_elements(By.XPATH, method['xpath'])
                         if buttons:
                             for index, button in enumerate(buttons):
                                 try:
-                                    WebDriverWait(self.driver, 10).until(EC.visibility_of(button))
-                                    WebDriverWait(self.driver, 10).until(EC.element_to_be_clickable(button))
+                                    self.browser.wait_for_visible(button, 10)
+                                    self.browser.wait_for_clickable(button, 10)
                                     logger.debug(f"Found 'Easy Apply' button {index + 1}, attempting to click")
                                     return button
                                 except Exception as e:
@@ -249,11 +281,9 @@ class CoApplyerAIEasyApplier:
                         else:
                             raise TimeoutException("No 'Easy Apply' buttons found")
                     else:
-                        button = WebDriverWait(self.driver, 10).until(
-                            EC.presence_of_element_located((By.XPATH, method['xpath']))
-                        )
-                        WebDriverWait(self.driver, 10).until(EC.visibility_of(button))
-                        WebDriverWait(self.driver, 10).until(EC.element_to_be_clickable(button))
+                        button = self.browser.wait_for_presence(By.XPATH, method['xpath'], 10)
+                        self.browser.wait_for_visible(button, 10)
+                        self.browser.wait_for_clickable(button, 10)
                         logger.debug("Found 'Easy Apply' button, attempting to click")
                         return button
 
@@ -267,11 +297,11 @@ class CoApplyerAIEasyApplier:
 
             if attempt == 0:
                 logger.debug("Refreshing page to retry finding 'Easy Apply' button")
-                self.driver.refresh()
+                self.browser.refresh()
                 time.sleep(random.randint(3, 5))
             attempt += 1
 
-        page_url = self.driver.current_url
+        page_url = self.browser.current_url()
         logger.error(f"No clickable 'Easy Apply' button found after 2 attempts. page url: {page_url}")
         raise Exception("No clickable 'Easy Apply' button found")
 
@@ -285,9 +315,8 @@ class CoApplyerAIEasyApplier:
                 '//button[contains(@class, "jobs-description__footer-button")]',
             ]:
                 try:
-                    see_more_button = self.driver.find_element(By.XPATH, see_more_xpath)
-                    actions = ActionChains(self.driver)
-                    actions.move_to_element(see_more_button).click().perform()
+                    see_more_button = self.browser.find_element(By.XPATH, see_more_xpath)
+                    self.browser.click(see_more_button, hover_first=True)
                     time.sleep(2)
                     break
                 except NoSuchElementException:
@@ -306,7 +335,7 @@ class CoApplyerAIEasyApplier:
             ]
             for by, selector in description_selectors:
                 try:
-                    element = self.driver.find_element(by, selector)
+                    element = self.browser.find_element(by, selector)
                     description = element.text
                     if description.strip():
                         logger.debug("Job description retrieved successfully")
@@ -323,9 +352,7 @@ class CoApplyerAIEasyApplier:
     def _get_job_recruiter(self):
         logger.debug("Getting job recruiter information")
         try:
-            hiring_team_section = WebDriverWait(self.driver, 10).until(
-                EC.presence_of_element_located((By.XPATH, '//h2[text()="Meet the hiring team"]'))
-            )
+            hiring_team_section = self.browser.wait_for_presence(By.XPATH, '//h2[text()="Meet the hiring team"]', 10)
             logger.debug("Hiring team section found")
 
             recruiter_elements = hiring_team_section.find_elements(By.XPATH,
@@ -345,33 +372,177 @@ class CoApplyerAIEasyApplier:
 
     def _scroll_page(self) -> None:
         logger.debug("Scrolling the page")
-        scrollable_element = self.driver.find_element(By.TAG_NAME, 'html')
-        browser_utils.scroll_slow(self.driver, scrollable_element, step=300, reverse=False)
-        browser_utils.scroll_slow(self.driver, scrollable_element, step=300, reverse=True)
+        for _ in range(3):
+            self.browser.execute_script("window.scrollBy(0, window.innerHeight);")
+            time.sleep(0.5)
+        self.browser.execute_script("window.scrollTo(0, 0);")
+
+    def _sdui_dialog_present(self) -> bool:
+            try:
+                    return bool(self.browser.execute_script(self.SDUI_WALKER + """
+                        for(const el of walk(document)){
+                            if(el.getAttribute && el.getAttribute('role')==='dialog') return true;
+                        }
+                        return false;
+                    """))
+            except Exception:
+                    return False
+
+    def _sdui_read_fields(self) -> list[dict[str, Any]]:
+            return self.browser.execute_script(self.SDUI_WALKER + """
+                let dlg=null;
+                for(const el of walk(document)){
+                    if(el.getAttribute&&el.getAttribute('role')==='dialog'){dlg=el;break;}
+                }
+                if(!dlg) return [];
+                const all=[...walk(dlg)];
+                const out=[];
+                for(const el of all){
+                    const t=(el.tagName||'').toLowerCase();
+                    if(t==='input'||t==='select'||t==='textarea'){
+                        let label='';
+                        if(el.id){
+                            const l=all.find(x=>x.tagName==='LABEL'&&x.getAttribute('for')===el.id);
+                            if(l) label=(l.innerText||'').trim();
+                        }
+                        if(!label){
+                            const p=el.closest('label');
+                            if(p) label=(p.innerText||'').trim();
+                        }
+                        const o={
+                            tag:t,
+                            type:el.type||'',
+                            id:el.id||'',
+                            name:el.name||'',
+                            value:el.value||'',
+                            checked:!!el.checked,
+                            required:!!el.required,
+                            label:label,
+                        };
+                        if(t==='select') o.options=[...el.options].map(op=>op.text);
+                        out.push(o);
+                    }
+                }
+                return out;
+            """)
+
+    def _sdui_list_buttons(self) -> list[str]:
+            return self.browser.execute_script(self.SDUI_WALKER + """
+                let dlg=null;
+                for(const el of walk(document)){
+                    if(el.getAttribute&&el.getAttribute('role')==='dialog'){dlg=el;break;}
+                }
+                if(!dlg) return [];
+                return [...walk(dlg)]
+                    .filter(e=>e.tagName==='BUTTON')
+                    .map(b=>b.getAttribute('aria-label')||b.innerText.trim())
+                    .filter(Boolean);
+            """)
+
+    def _sdui_click_button(self, regex: str) -> str:
+            return self.browser.execute_script(self.SDUI_WALKER + """
+                let dlg=null;
+                for(const el of walk(document)){
+                    if(el.getAttribute&&el.getAttribute('role')==='dialog'){dlg=el;break;}
+                }
+                if(!dlg) return 'nodialog';
+                const re=new RegExp(arguments[0],'i');
+                const b=[...walk(dlg)].filter(e=>e.tagName==='BUTTON')
+                    .find(x=>re.test(x.getAttribute('aria-label')||'')||re.test(x.innerText||''));
+                if(!b) return 'notfound';
+                b.click();
+                return 'clicked';
+            """, regex)
+
+    def _sdui_set_input(self, field_id: str, value: str) -> str:
+            return self.browser.execute_script(self.SDUI_WALKER + """
+                const all=[...walk(document)];
+                const el=all.find(e=>e.id===arguments[0]);
+                if(!el) return 'missing';
+                el.value='';
+                el.dispatchEvent(new Event('input',{bubbles:true}));
+                el.value=arguments[1];
+                el.dispatchEvent(new Event('input',{bubbles:true}));
+                el.dispatchEvent(new Event('change',{bubbles:true}));
+                const r=all.find(e=>e.id===arguments[0]);
+                return r&&r.value!==undefined ? r.value : '';
+            """, field_id, value)
+
+    def _sdui_set_select(self, field_id: str, visible_text: str) -> str:
+            return self.browser.execute_script(self.SDUI_WALKER + """
+                const all=[...walk(document)];
+                const el=all.find(e=>e.id===arguments[0]);
+                if(!el) return 'missing';
+                const o=[...el.options].find(x=>x.text.trim()===arguments[1]);
+                if(!o) return 'noopt';
+                el.value=o.value;
+                el.dispatchEvent(new Event('input',{bubbles:true}));
+                el.dispatchEvent(new Event('change',{bubbles:true}));
+                const r=all.find(e=>e.id===arguments[0]);
+                return r&&r.selectedOptions&&r.selectedOptions.length ? r.selectedOptions[0].text : '';
+            """, field_id, visible_text)
+
+    def _sdui_set_checked(self, field_id: str, want_checked: bool) -> bool:
+            return bool(self.browser.execute_script(self.SDUI_WALKER + """
+                const all=[...walk(document)];
+                const el=all.find(e=>e.id===arguments[0]);
+                if(!el) return false;
+                if(!!el.checked !== !!arguments[1]) el.click();
+                const r=all.find(e=>e.id===arguments[0]);
+                return !!(r && r.checked);
+            """, field_id, want_checked))
+
+    def _sdui_fill_geo(self, field_id: str, city_text: str) -> None:
+            logger.debug(f"Filling SDUI GEO field {field_id} with city text: {city_text}")
+            self.browser.execute_script(self.SDUI_WALKER + """
+                const el=[...walk(document)].find(e=>e.id===arguments[0]);
+                if(el) el.focus();
+            """, field_id)
+            ActionChains(self.driver).send_keys(city_text).perform()
+            time.sleep(2.5)
+            pick_result = self.browser.execute_script(self.SDUI_WALKER + """
+                const q=(arguments[0]||'').toLowerCase();
+                const opts=[...walk(document)].filter(e=>e.getAttribute&&e.getAttribute('role')==='option');
+                let pick=opts.find(o=>(o.innerText||'').toLowerCase().includes(q));
+                if(!pick) pick=opts[0];
+                if(!pick) return 'nooption';
+                pick.click();
+                return 'picked:' + (pick.innerText||'').trim();
+            """, city_text)
+            logger.debug(f"SDUI GEO pick result: {pick_result}")
+
+    def _sync_easy_apply_mode(self) -> None:
+            if self._sdui_dialog_present():
+                    self._easy_apply_mode = "sdui"
+                    return
+            dialogs = self.browser.find_elements(By.XPATH, "//div[@role='dialog'] | //dialog")
+            self._easy_apply_mode = "classic" if dialogs else self._easy_apply_mode
 
     def _wait_for_easy_apply_surface(self, timeout_seconds: int = 10) -> None:
         """Wait until Easy Apply dialog content or its footer actions are rendered."""
         try:
-            self.driver.switch_to.default_content()
+            self.browser.switch_to_default_content()
         except Exception:
             # Best-effort reset in case webdriver is already in default content.
             pass
 
-        def _surface_ready(driver) -> bool:
+        def _surface_ready() -> bool:
+            if self._sdui_dialog_present():
+                return True
             has_container = bool(
-                driver.find_elements(By.CLASS_NAME, 'jobs-easy-apply-content')
-                or driver.find_elements(By.CLASS_NAME, 'jobs-easy-apply-form')
-                or driver.find_elements(By.CLASS_NAME, 'jobs-easy-apply-modal__content')
-                or driver.find_elements(By.CLASS_NAME, 'artdeco-modal__content')
+                self.browser.find_elements(By.CLASS_NAME, 'jobs-easy-apply-content')
+                or self.browser.find_elements(By.CLASS_NAME, 'jobs-easy-apply-form')
+                or self.browser.find_elements(By.CLASS_NAME, 'jobs-easy-apply-modal__content')
+                or self.browser.find_elements(By.CLASS_NAME, 'artdeco-modal__content')
             )
             has_dialog = bool(
-                driver.find_elements(
+                self.browser.find_elements(
                     By.XPATH,
                     "//dialog | //*[@role='dialog'] | //*[@data-test-modal] | //div[contains(@class,'jobs-easy-apply-modal')]"
                 )
             )
             has_actions = bool(
-                driver.find_elements(
+                self.browser.find_elements(
                     By.XPATH,
                     "//button["
                     "not(@disabled) and ("
@@ -388,7 +559,9 @@ class CoApplyerAIEasyApplier:
             return has_container or has_dialog or has_actions
 
         try:
-            WebDriverWait(self.driver, timeout_seconds).until(_surface_ready)
+            self.browser.wait_until(_surface_ready, timeout_seconds)
+            self._sync_easy_apply_mode()
+            logger.debug(f"Detected Easy Apply mode: {self._easy_apply_mode}")
         except TimeoutException:
             logger.warning("Timed out waiting for Easy Apply dialog surface to render")
 
@@ -398,6 +571,7 @@ class CoApplyerAIEasyApplier:
         logger.debug(f"Filling out application form for job: {job}")
         failed_container_attempts = 0
         while True:
+            self._sync_easy_apply_mode()
             if not self.fill_up(job_context):
                 failed_container_attempts += 1
                 if failed_container_attempts <= 2:
@@ -413,8 +587,132 @@ class CoApplyerAIEasyApplier:
                 logger.debug("Application form submitted")
                 break
 
+    def _get_existing_answer(self, question_text: str, question_type: str) -> Optional[str]:
+        question_sanitized = self._sanitize_text(question_text)
+        for item in self.all_data:
+            if question_sanitized in item.get('question', '') and item.get('type') == question_type:
+                return item.get('answer')
+        return None
+
+    def _decide_sdui_answer(self, field: dict[str, Any]) -> Optional[str]:
+        label = (field.get("label") or "unknown").lower().strip()
+        tag = (field.get("tag") or "").lower()
+        field_type = (field.get("type") or "").lower()
+        options = field.get("options") or []
+
+        if tag == "select":
+            existing = self._get_existing_answer(label, "dropdown")
+            if existing:
+                return existing
+            answer = self.gpt_answerer.answer_question_from_options(label, options)
+            self._save_questions_to_json({'type': 'dropdown', 'question': label, 'answer': answer})
+            self.all_data = self._load_questions_from_json()
+            return answer
+
+        if tag in ("input", "textarea") and field_type not in ("checkbox", "radio", "file", "hidden"):
+            question_type = "numeric" if self._is_numeric_field_id_or_type(field.get("id", ""), field_type) else "textbox"
+            existing = self._get_existing_answer(label, question_type)
+            if existing:
+                return existing
+            if question_type == "numeric":
+                answer = self.gpt_answerer.answer_question_numeric(label)
+            else:
+                answer = self.gpt_answerer.answer_question_textual_wide_range(label)
+            self._save_questions_to_json({'type': question_type, 'question': label, 'answer': answer})
+            self.all_data = self._load_questions_from_json()
+            return str(answer)
+
+        return None
+
+    def _is_numeric_field_id_or_type(self, field_id: str, field_type: str) -> bool:
+        field_id_l = (field_id or "").lower()
+        field_type_l = (field_type or "").lower()
+        return 'numeric' in field_id_l or field_type_l == 'number' or (field_type_l == 'text' and 'numeric' in field_id_l)
+
+    def _fill_sdui_fields(self, job_context: JobContext) -> bool:
+        fields = self._sdui_read_fields()
+        if not fields:
+            logger.debug("No SDUI fields found in dialog")
+            return False
+
+        logger.debug(f"Processing {len(fields)} SDUI field(s)")
+        for field in fields:
+            field_id = field.get("id") or ""
+            if not field_id:
+                continue
+            field_type = (field.get("type") or "").lower()
+            label = (field.get("label") or "").lower().strip()
+            current_value = str(field.get("value") or "")
+
+            if field_type in ("file", "hidden"):
+                continue
+
+            if field_type in ("checkbox", "radio"):
+                if "top choice" in label:
+                    continue
+                if any(k in label for k in ("terms", "privacy", "consent", "agree", "declare")):
+                    if not bool(field.get("checked")):
+                        self._sdui_set_checked(field_id, True)
+                    continue
+                continue
+
+            if "location-geo-location" in field_id.lower() and not current_value.strip():
+                city = self.gpt_answerer.answer_question_textual_wide_range(label or "current city")
+                self._sdui_fill_geo(field_id, city)
+                continue
+
+            answer = self._decide_sdui_answer(field)
+            if answer is None:
+                continue
+
+            if field.get("tag") == "select":
+                if current_value.strip() != str(answer).strip():
+                    selected = self._sdui_set_select(field_id, str(answer))
+                    if selected in ("missing", "noopt"):
+                        logger.warning(f"Could not set SDUI select {field_id} to '{answer}': {selected}")
+                continue
+
+            if current_value.strip() != str(answer).strip():
+                read_back = self._sdui_set_input(field_id, str(answer))
+                if str(read_back).strip() != str(answer).strip():
+                    logger.warning(
+                        f"SDUI input verification mismatch for field {field_id}: expected '{answer}', got '{read_back}'"
+                    )
+
+            job_context.job_application.save_application_data(
+                {'type': 'sdui', 'question': label or field_id, 'answer': str(answer)}
+            )
+        return True
+
     def _next_or_submit(self):
         logger.debug("Clicking 'Next' or 'Submit' button")
+
+        self._sync_easy_apply_mode()
+        if self._easy_apply_mode == "sdui":
+            button_labels = [label.lower() for label in self._sdui_list_buttons()]
+            logger.debug(f"Found SDUI button labels: {button_labels}")
+            if any("submit application" in label for label in button_labels):
+                if REQUIRE_HUMAN_CONFIRMATION_FOR_SUBMIT:
+                    logger.info("Submit application detected in SDUI dialog; pausing for human confirmation")
+                    raise SubmitConfirmationRequired()
+                self._unfollow_company()
+                utils.time_utils.short_sleep()
+                result = self._sdui_click_button(r"Submit application")
+                logger.debug(f"SDUI submit click result: {result}")
+                utils.time_utils.short_sleep()
+                return True
+            if any("review your application" in label for label in button_labels):
+                result = self._sdui_click_button(r"Review your application")
+                logger.debug(f"SDUI review click result: {result}")
+                utils.time_utils.medium_sleep()
+                self._check_for_errors()
+                return False
+            if any("continue to next step" in label for label in button_labels):
+                result = self._sdui_click_button(r"Continue to next step")
+                logger.debug(f"SDUI continue click result: {result}")
+                utils.time_utils.medium_sleep()
+                self._check_for_errors()
+                return False
 
         def _click_button(button: WebElement, is_submit: bool) -> bool:
             if is_submit:
@@ -433,7 +731,7 @@ class CoApplyerAIEasyApplier:
             return False
 
         def _find_action_buttons() -> list[WebElement]:
-            return self.driver.find_elements(
+            return self.browser.find_elements(
                 By.XPATH,
                 "//button["
                 "not(@disabled) and ("
@@ -449,7 +747,7 @@ class CoApplyerAIEasyApplier:
 
         # Wait briefly for modal footer controls to render after field interactions.
         try:
-            WebDriverWait(self.driver, 8).until(lambda d: len(_find_action_buttons()) > 0)
+            self.browser.wait_until(lambda: len(_find_action_buttons()) > 0, 8)
         except TimeoutException:
             logger.debug("Timed out waiting for Easy Apply action buttons")
 
@@ -465,6 +763,9 @@ class CoApplyerAIEasyApplier:
             has_submit_data_attr = bool(button.get_attribute("data-easy-apply-submit-button"))
 
             if "submit application" in label or has_submit_data_attr:
+                if REQUIRE_HUMAN_CONFIRMATION_FOR_SUBMIT:
+                    logger.info("Submit application detected; pausing for human confirmation")
+                    raise SubmitConfirmationRequired()
                 return _click_button(button, is_submit=True)
             if (
                 "continue to next step" in label
@@ -478,7 +779,7 @@ class CoApplyerAIEasyApplier:
 
         # Fallback path: primary CTA buttons without reliable aria-label.
         logger.debug("Falling back to primary CTA button detection")
-        fallback_buttons = self.driver.find_elements(
+        fallback_buttons = self.browser.find_elements(
             By.XPATH,
             "//button[contains(@class, 'artdeco-button--primary') and not(@disabled)]"
         )
@@ -495,7 +796,7 @@ class CoApplyerAIEasyApplier:
     def _unfollow_company(self) -> None:
         try:
             logger.debug("Unfollowing company")
-            follow_checkbox = self.driver.find_element(
+            follow_checkbox = self.browser.find_element(
                 By.XPATH, "//label[contains(.,'to stay up to date with their page.')]")
             follow_checkbox.click()
         except Exception as e:
@@ -503,7 +804,23 @@ class CoApplyerAIEasyApplier:
 
     def _check_for_errors(self) -> None:
         logger.debug("Checking for form errors")
-        error_elements = self.driver.find_elements(By.CLASS_NAME, 'artdeco-inline-feedback--error')
+        if self._easy_apply_mode == "sdui":
+            sdui_errors = self.browser.execute_script(self.SDUI_WALKER + """
+              let dlg=null;
+              for(const el of walk(document)){
+                if(el.getAttribute&&el.getAttribute('role')==='dialog'){dlg=el;break;}
+              }
+              if(!dlg) return [];
+              return [...walk(dlg)]
+                .filter(e=>((e.className||'')+'').includes('artdeco-inline-feedback--error'))
+                .map(e=>(e.innerText||'').trim())
+                .filter(Boolean);
+            """)
+            if sdui_errors:
+                logger.error(f"SDUI form submission failed with errors: {sdui_errors}")
+                raise Exception(f"Failed answering or file upload. {str(sdui_errors)}")
+
+        error_elements = self.browser.find_elements(By.CLASS_NAME, 'artdeco-inline-feedback--error')
         if error_elements:
             logger.error(f"Form submission failed with errors: {error_elements}")
             raise Exception(f"Failed answering or file upload. {str([e.text for e in error_elements])}")
@@ -518,7 +835,7 @@ class CoApplyerAIEasyApplier:
                 (By.XPATH, '//button[normalize-space(text())="Dismiss"]'),
             ]:
                 try:
-                    self.driver.find_element(*dismiss_selector).click()
+                    self.browser.find_element(*dismiss_selector).click()
                     break
                 except NoSuchElementException:
                     continue
@@ -529,7 +846,7 @@ class CoApplyerAIEasyApplier:
                 (By.CLASS_NAME, 'artdeco-modal__confirm-dialog-btn'),
             ]:
                 try:
-                    buttons = self.driver.find_elements(*discard_selector)
+                    buttons = self.browser.find_elements(*discard_selector)
                     if buttons:
                         buttons[0].click()
                         break
@@ -549,7 +866,7 @@ class CoApplyerAIEasyApplier:
                 (By.XPATH, '//button[normalize-space(text())="Dismiss"]'),
             ]:
                 try:
-                    self.driver.find_element(*dismiss_selector).click()
+                    self.browser.find_element(*dismiss_selector).click()
                     break
                 except NoSuchElementException:
                     continue
@@ -560,7 +877,7 @@ class CoApplyerAIEasyApplier:
                 (By.CLASS_NAME, 'artdeco-modal__confirm-dialog-btn'),
             ]:
                 try:
-                    buttons = self.driver.find_elements(*save_selector)
+                    buttons = self.browser.find_elements(*save_selector)
                     if len(buttons) > 1:
                         buttons[1].click()
                         break
@@ -578,8 +895,12 @@ class CoApplyerAIEasyApplier:
         logger.debug(f"Filling up form sections for job: {job}")
 
         try:
+            self._sync_easy_apply_mode()
+            if self._easy_apply_mode == "sdui":
+                return self._fill_sdui_fields(job_context)
+
             try:
-                self.driver.switch_to.default_content()
+                self.browser.switch_to_default_content()
             except Exception:
                 pass
 
@@ -593,7 +914,7 @@ class CoApplyerAIEasyApplier:
                 'jobs-easy-apply-modal__content',
                 'artdeco-modal__content',
             ]:
-                elements = self.driver.find_elements(By.CLASS_NAME, css_class)
+                elements = self.browser.find_elements(By.CLASS_NAME, css_class)
                 if elements:
                     easy_apply_content = elements[0]
                     logger.debug(f"Found form container with class: {css_class}")
@@ -601,7 +922,7 @@ class CoApplyerAIEasyApplier:
 
             if easy_apply_content is None:
                 # Fallback: use the dialog element directly
-                dialogs = self.driver.find_elements(
+                dialogs = self.browser.find_elements(
                     By.XPATH,
                     "//dialog | //*[@role='dialog'] | //*[@data-test-modal] | //div[contains(@class,'jobs-easy-apply-modal')]"
                 )
@@ -609,7 +930,7 @@ class CoApplyerAIEasyApplier:
                     easy_apply_content = dialogs[0]
                     logger.debug("Using dialog element as form container fallback")
                 else:
-                    form_roots = self.driver.find_elements(
+                    form_roots = self.browser.find_elements(
                         By.XPATH,
                         "//form[.//button[@data-easy-apply-next-button or @data-live-test-easy-apply-next-button or @data-easy-apply-submit-button]]"
                     )
@@ -618,7 +939,7 @@ class CoApplyerAIEasyApplier:
                         logger.debug("Using form element as fallback container")
 
                     # Some LinkedIn steps render only footer actions with no form wrapper classes.
-                    action_buttons = self.driver.find_elements(
+                    action_buttons = self.browser.find_elements(
                         By.XPATH,
                         "//button["
                         "not(@disabled) and ("
@@ -662,19 +983,18 @@ class CoApplyerAIEasyApplier:
         logger.debug("Handling dropdown fields")
 
         dropdown = element.find_element(By.TAG_NAME, 'select')
-        select = Select(dropdown)
         dropdown_id = dropdown.get_attribute('id')
         if 'phoneNumber-Country' in dropdown_id:
             country = self.resume_generator_manager.get_resume_country()
             if country:
                 try:
-                    select.select_by_value(country)
+                    self.browser.select_by_visible_text(dropdown, country)
                     logger.debug(f"Selected phone country: {country}")
                     return True
                 except NoSuchElementException:
                     logger.warning(f"Country {country} not found in dropdown options")
 
-        options = [option.text for option in select.options]
+        options = self.browser.get_select_options(dropdown)
         logger.debug(f"Dropdown options found: {options}")
 
         parent_element = dropdown.find_element(By.XPATH, '../..')
@@ -704,7 +1024,7 @@ class CoApplyerAIEasyApplier:
             self.all_data = self._load_questions_from_json()
 
         if existing_answer in options:
-            select.select_by_visible_text(existing_answer)
+            self.browser.select_by_visible_text(dropdown, existing_answer)
             logger.debug(f"Selected option: {existing_answer}")
             self.job_application.save_application_data({'type': 'dropdown', 'question': question_text, 'answer': existing_answer})
         else:
@@ -720,17 +1040,17 @@ class CoApplyerAIEasyApplier:
         logger.debug("Handling upload fields")
 
         try:
-            show_more_button = self.driver.find_element(By.XPATH,
+            show_more_button = self.browser.find_element(By.XPATH,
                                                         "//button[contains(@aria-label, 'Show more resumes')]")
             show_more_button.click()
             logger.debug("Clicked 'Show more resumes' button")
         except NoSuchElementException:
             logger.debug("'Show more resumes' button not found, continuing...")
 
-        file_upload_elements = self.driver.find_elements(By.XPATH, "//input[@type='file']")
+        file_upload_elements = self.browser.find_elements(By.XPATH, "//input[@type='file']")
         for element in file_upload_elements:
             parent = element.find_element(By.XPATH, "..")
-            self.driver.execute_script("arguments[0].classList.remove('hidden')", element)
+            self.browser.execute_script("arguments[0].classList.remove('hidden')", element)
 
             output = self.gpt_answerer.resume_or_cover(parent.text.lower())
             if 'resume' in output:
@@ -937,7 +1257,7 @@ class CoApplyerAIEasyApplier:
 
     def _fill_additional_questions(self, job_context : JobContext) -> None:
         logger.debug("Filling additional questions")
-        form_sections = self.driver.find_elements(By.CLASS_NAME, 'jobs-easy-apply-form-section__grouping')
+        form_sections = self.browser.find_elements(By.CLASS_NAME, 'jobs-easy-apply-form-section__grouping')
         for section in form_sections:
             self._process_form_section(job_context,section)
 
@@ -1047,11 +1367,6 @@ class CoApplyerAIEasyApplier:
                 self._save_questions_to_json({'type': question_type, 'question': question_text, 'answer': answer})
                 self.all_data = self._load_questions_from_json()
                 logger.debug("Saved non-cover letter answer to JSON.")
-
-            time.sleep(1)
-            text_field.send_keys(Keys.ARROW_DOWN)
-            text_field.send_keys(Keys.ENTER)
-            logger.debug("Selected first option from the dropdown.")
             return True
 
         logger.debug("No text fields found in the section.")
@@ -1098,15 +1413,14 @@ class CoApplyerAIEasyApplier:
 
             if dropdowns:
                 dropdown = dropdowns[0]
-                select = Select(dropdown)
-                options = [option.text for option in select.options]
+                options = self.browser.get_select_options(dropdown)
 
                 logger.debug(f"Dropdown options found: {options}")
 
                 question_text = question.find_element(By.TAG_NAME, 'label').text.lower()
                 logger.debug(f"Processing dropdown or combobox question: {question_text}")
 
-                current_selection = select.first_selected_option.text
+                current_selection = self.browser.get_selected_option_text(dropdown)
                 logger.debug(f"Current selection: {current_selection}")
 
                 existing_answer = None
@@ -1121,14 +1435,14 @@ class CoApplyerAIEasyApplier:
                     job_application.save_application_data({'type': 'dropdown', 'question': question_text, 'answer': existing_answer})
                     if current_selection != existing_answer:
                         logger.debug(f"Updating selection to: {existing_answer}")
-                        self._select_dropdown_option(dropdown, existing_answer)
+                        self.browser.select_by_visible_text(dropdown, existing_answer)
                 else:
                     logger.debug(f"No existing answer found, querying model for: {question_text}")
                     answer = self.gpt_answerer.answer_question_from_options(question_text, options)
                     self._save_questions_to_json({'type': 'dropdown', 'question': question_text, 'answer': answer})
                     self.all_data = self._load_questions_from_json()
                     job_application.save_application_data({'type': 'dropdown', 'question': question_text, 'answer': answer})
-                    self._select_dropdown_option(dropdown, answer)
+                    self.browser.select_by_visible_text(dropdown, answer)
                     logger.debug(f"Selected new dropdown answer: {answer}")
 
                 return True
@@ -1145,16 +1459,33 @@ class CoApplyerAIEasyApplier:
             return False
 
     def _is_numeric_field(self, field: WebElement) -> bool:
-        field_type = field.get_attribute('type').lower()
-        field_id = field.get_attribute("id").lower()
-        is_numeric = 'numeric' in field_id or field_type == 'number' or ('text' == field_type and 'numeric' in field_id)
+        field_type = (field.get_attribute('type') or '').lower()
+        field_id = (field.get_attribute("id") or '').lower()
+        is_numeric = self._is_numeric_field_id_or_type(field_id, field_type)
         logger.debug(f"Field type: {field_type}, Field ID: {field_id}, Is numeric: {is_numeric}")
         return is_numeric
 
     def _enter_text(self, element: WebElement, text: str) -> None:
         logger.debug(f"Entering text: {text}")
-        element.clear()
-        element.send_keys(text)
+        last_error: Optional[Exception] = None
+        for attempt in range(3):
+            try:
+                self.browser.fill_text(element, text)
+                self.browser.wait_until(lambda: self.browser.get_element_value(element) == text, 5)
+                return
+            except Exception as exc:
+                last_error = exc
+                logger.warning(f"Text entry verification failed on attempt {attempt + 1}: {exc}")
+                try:
+                    self.browser.execute_script(
+                        "arguments[0].value = ''; arguments[0].dispatchEvent(new Event('input', { bubbles: true }));",
+                        element,
+                    )
+                except Exception:
+                    pass
+                time.sleep(1)
+
+        raise Exception(f"Failed to enter text after retries: {last_error}")
 
     def _select_radio(self, radios: List[WebElement], answer: str) -> None:
         logger.debug(f"Selecting radio option: {answer}")
@@ -1166,8 +1497,7 @@ class CoApplyerAIEasyApplier:
 
     def _select_dropdown_option(self, element: WebElement, text: str) -> None:
         logger.debug(f"Selecting dropdown option: {text}")
-        select = Select(element)
-        select.select_by_visible_text(text)
+        self.browser.select_by_visible_text(element, text)
 
     def _save_questions_to_json(self, question_data: dict) -> None:
         output_file = 'answers.json'

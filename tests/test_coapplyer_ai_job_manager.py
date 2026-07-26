@@ -222,6 +222,24 @@ def test_apply_jobs_writes_skipped_when_not_suitable(mocker, job_manager):
     write_to_file_spy.assert_called_once_with(job, "skipped", "Job did not pass suitability filter")
 
 
+def test_apply_jobs_writes_skipped_when_awaiting_human_confirmation(mocker, job_manager):
+    job = Job(title="Title", company="Company", location="Location", apply_method="", link="Link")
+    mocker.patch.object(job_manager, 'get_jobs_from_page', return_value=[mocker.Mock()])
+    mocker.patch.object(job_manager, 'job_tile_to_job', return_value=job)
+    mocker.patch.object(job_manager, 'is_blacklisted', return_value=False)
+    mocker.patch.object(job_manager, 'is_already_applied_to_job', return_value=False)
+    mocker.patch.object(job_manager, 'is_already_applied_to_company', return_value=False)
+    mocker.patch.object(job_manager, 'is_previously_failed_to_apply', return_value=False)
+
+    job_manager.easy_applier_component = mocker.Mock()
+    job_manager.easy_applier_component.job_apply.return_value = CoApplyerAIEasyApplier.STATUS_AWAITING_HUMAN_CONFIRMATION
+    write_to_file_spy = mocker.patch.object(job_manager, 'write_to_file')
+
+    job_manager.apply_jobs()
+
+    write_to_file_spy.assert_called_once_with(job, "skipped", "Awaiting human confirmation before submit")
+
+
 def test_write_to_file_sets_empty_pdf_path_when_resume_missing(job_manager, tmp_path):
     job_manager.output_file_directory = tmp_path
     job = Job(

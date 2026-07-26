@@ -17,6 +17,12 @@ DISABLE_DESCRIPTION_FILTER = False
 JOB_MAX_APPLICATIONS = 5
 JOB_MIN_APPLICATIONS = 1
 
+# Browser engine selection. Playwright MCP is the default; use the CLI flag to force Selenium.
+BROWSER_ENGINE = "playwright"
+
+# Final submit should pause for human confirmation by default.
+REQUIRE_HUMAN_CONFIRMATION_FOR_SUBMIT = True
+
 LLM_MODEL_TYPE = "azure_openai"
 LLM_MODEL = "gpt-4o-mini"
 # Only required for OLLAMA models

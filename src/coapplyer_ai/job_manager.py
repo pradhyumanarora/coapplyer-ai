@@ -14,6 +14,7 @@ from selenium.webdriver.common.by import By
 
 from coapplyer_ai.linkedIn_easy_applier import CoApplyerAIEasyApplier
 from app_config import JOB_MAX_APPLICATIONS, JOB_MIN_APPLICATIONS, MINIMUM_WAIT_TIME_IN_SECONDS, DISABLE_DESCRIPTION_FILTER
+from src.browser_adapters import BrowserAdapter, SeleniumBrowserAdapter
 
 from src.job import Job
 from src.logging import logger
@@ -22,7 +23,6 @@ import urllib.parse
 from src.regex_utils import generate_regex_patterns_for_blacklisting
 import re
 
-import src.utils.browser_utils as browser_utils
 import src.utils.time_utils
 
 
@@ -47,12 +47,17 @@ class EnvironmentKeys:
 
 
 class CoApplyerAIJobManager:
-    def __init__(self, driver):
+    def __init__(self, driver, browser_adapter: BrowserAdapter | None = None):
         logger.debug("Initializing CoApplyerAIJobManager")
         self.driver = driver
+        self.browser_adapter = browser_adapter or (SeleniumBrowserAdapter(driver) if driver is not None else None)
         self.set_old_answers = set()
         self.easy_applier_component = None
+        self.trial_job_limit = None
         logger.debug("CoApplyerAIJobManager initialized successfully")
+
+    def _browser(self):
+        return self.browser_adapter or self.driver
 
     def set_parameters(self, parameters):
         logger.debug("Setting parameters for CoApplyerAIJobManager")
@@ -76,6 +81,7 @@ class CoApplyerAIJobManager:
         resume_path = parameters.get('uploads', {}).get('resume', None)
         self.resume_path = Path(resume_path) if resume_path and Path(resume_path).exists() else None
         self.output_file_directory = Path(parameters['outputFileDirectory'])
+        self.trial_job_limit = parameters.get('trialJobLimit')
         self.env_config = EnvironmentKeys()
         logger.debug("Parameters set successfully")
 
@@ -136,7 +142,8 @@ class CoApplyerAIJobManager:
         logger.debug("Starting job application process")
         self.easy_applier_component = CoApplyerAIEasyApplier(self.driver, self.resume_path, self.set_old_answers,
                                                           self.gpt_answerer, self.resume_generator_manager,
-                                                          disable_suitability_filter=self.env_config.disable_description_filter)
+                                                          disable_suitability_filter=self.env_config.disable_description_filter,
+                                                          browser_adapter=self.browser_adapter)
         searches = list(product(self.positions, self.locations))
         random.shuffle(searches)
         page_sleep = 0
@@ -245,8 +252,9 @@ class CoApplyerAIJobManager:
     def get_jobs_from_page(self, scroll=False):
 
         try:
-            no_jobs_element = self.driver.find_element(By.CLASS_NAME, 'jobs-search-two-pane__no-results-banner--expand')
-            if 'No matching jobs found' in no_jobs_element.text or 'unfortunately, things aren' in self.driver.page_source.lower():
+            browser = self._browser()
+            no_jobs_element = browser.find_element(By.CLASS_NAME, 'jobs-search-two-pane__no-results-banner--expand')
+            if 'No matching jobs found' in no_jobs_element.text or 'unfortunately, things aren' in browser.page_source().lower():
                 logger.debug("No matching jobs found on this page, skipping.")
                 return []
 
@@ -265,7 +273,7 @@ class CoApplyerAIJobManager:
             jobs_container = None
             for xpath in container_xpaths:
                 try:
-                    candidate = self.driver.find_element(By.XPATH, xpath)
+                    candidate = browser.find_element(By.XPATH, xpath)
                     jobs_container = candidate
                     logger.debug(f"Found jobs container with selector: {xpath}")
                     break
@@ -276,13 +284,11 @@ class CoApplyerAIJobManager:
                 raise NoSuchElementException("No jobs container found with any known selector")
 
             if scroll:
-                # Scroll the container itself, or its scrollable parent
-                scroll_target = jobs_container
-                if not browser_utils.is_scrollable(jobs_container):
-                    scroll_target = jobs_container.find_element(By.XPATH, "..")
-                logger.warning(f'is scrollable: {browser_utils.is_scrollable(scroll_target)}')
-                browser_utils.scroll_slow(self.driver, scroll_target)
-                browser_utils.scroll_slow(self.driver, scroll_target, step=300, reverse=True)
+                logger.debug("Scrolling job results to load more cards")
+                for _ in range(3):
+                    browser.execute_script("window.scrollBy(0, document.body.scrollHeight);")
+                    time.sleep(0.5)
+                browser.execute_script("window.scrollTo(0, 0);")
 
             # Try multiple item selectors to handle LinkedIn UI changes
             item_xpaths = [
@@ -304,7 +310,7 @@ class CoApplyerAIJobManager:
             if not job_element_list:
                 # Fallback: search the whole page for li elements containing job view links
                 logger.debug("No job items in container, trying page-wide job link search...")
-                job_element_list = self.driver.find_elements(
+                job_element_list = browser.find_elements(
                     By.XPATH, "//main//li[.//a[contains(@href, '/jobs/view/')]]"
                 )
                 if job_element_list:
@@ -343,6 +349,7 @@ class CoApplyerAIJobManager:
         job_element_list = self.get_jobs_from_page()
 
         job_list = [self.job_tile_to_job(job_element) for job_element in job_element_list]
+        applied_attempts = 0
 
         for job in job_list:
 
@@ -417,18 +424,33 @@ class CoApplyerAIJobManager:
             try:
                 if job.apply_method not in {"Continue", "Applied", "Apply"}:
                     application_status = self.easy_applier_component.job_apply(job)
+                    applied_attempts += 1
                     if application_status in {None, CoApplyerAIEasyApplier.STATUS_SUBMITTED}:
                         self.write_to_file(job, "success")
                         logger.debug(f"Applied to job: {job.title} at {job.company}")
                     elif application_status == CoApplyerAIEasyApplier.STATUS_SKIPPED_NOT_SUITABLE:
                         self.write_to_file(job, "skipped", "Job did not pass suitability filter")
                         logger.debug(f"Skipped job due to suitability filter: {job.title} at {job.company}")
+                    elif application_status == CoApplyerAIEasyApplier.STATUS_AWAITING_HUMAN_CONFIRMATION:
+                        self.write_to_file(job, "skipped", "Awaiting human confirmation before submit")
+                        logger.info(f"Paused before submit for human confirmation: {job.title} at {job.company}")
                     else:
                         self.write_to_file(job, "skipped", f"Unexpected apply status: {application_status}")
                         logger.warning(f"Unexpected apply status '{application_status}' for job: {job.title} at {job.company}")
+
+                    if getattr(self, "trial_job_limit", None) and applied_attempts >= int(self.trial_job_limit):
+                        logger.info(
+                            f"Trial job limit reached ({self.trial_job_limit}); stopping after the first application attempt"
+                        )
+                        break
             except Exception as e:
                 logger.error("Failed to apply for {} at {}: {}", job.title, job.company, type(e).__name__)
                 self.write_to_file(job, "failed", f"Application error: {type(e).__name__}")
+                if getattr(self, "trial_job_limit", None) and applied_attempts >= int(self.trial_job_limit):
+                    logger.info(
+                        f"Trial job limit reached ({self.trial_job_limit}) after failure; stopping run"
+                    )
+                    break
                 continue
 
     def write_to_file(self, job : Job, file_name, reason=None):
@@ -504,7 +526,8 @@ class CoApplyerAIJobManager:
     def next_job_page(self, position, location, job_page):
         logger.debug(f"Navigating to next job page: {position} in {location}, page {job_page}")
         encoded_position = urllib.parse.quote(position)
-        self.driver.get(
+        browser = self._browser()
+        browser.get(
             f"https://www.linkedin.com/jobs/search/{self.base_search_url}&keywords={encoded_position}{location}&start={job_page * 25}")
 
 

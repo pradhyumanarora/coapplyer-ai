@@ -15,9 +15,10 @@ def ensure_chrome_profile():
         logger.debug(f"Created Chrome profile directory: {chromeProfilePath}")
     return chromeProfilePath
 
-def chrome_browser_options():
+def chrome_browser_options(use_profile: bool = True):
     logger.debug("Setting Chrome browser options")
-    ensure_chrome_profile()
+    if use_profile:
+        ensure_chrome_profile()
     options = webdriver.ChromeOptions()
     options.add_argument("--start-maximized")
     options.add_argument("--no-sandbox")
@@ -45,7 +46,7 @@ def chrome_browser_options():
     }
     options.add_experimental_option("prefs", prefs)
 
-    if len(chromeProfilePath) > 0:
+    if use_profile and len(chromeProfilePath) > 0:
         initial_path = os.path.dirname(chromeProfilePath)
         profile_dir = os.path.basename(chromeProfilePath)
         options.add_argument('--user-data-dir=' + initial_path)

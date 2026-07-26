@@ -39,3 +39,10 @@ _cfg = _load_config_module()
 for _name in dir(_cfg):
     if _name.isupper():
         globals()[_name] = getattr(_cfg, _name)
+
+# Backward-compatible defaults for older local config.py files.
+if "BROWSER_ENGINE" not in globals():
+    BROWSER_ENGINE = "playwright"
+
+if "REQUIRE_HUMAN_CONFIRMATION_FOR_SUBMIT" not in globals():
+    REQUIRE_HUMAN_CONFIRMATION_FOR_SUBMIT = True

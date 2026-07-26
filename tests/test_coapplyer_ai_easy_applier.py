@@ -1,7 +1,7 @@
 import pytest
 from unittest import mock
 
-from coapplyer_ai.linkedIn_easy_applier import CoApplyerAIEasyApplier
+from coapplyer_ai.linkedIn_easy_applier import CoApplyerAIEasyApplier, SubmitConfirmationRequired
 from src.job import Job
 
 
@@ -119,19 +119,6 @@ def test_job_apply_returns_skipped_when_not_suitable(mocker, easy_applier):
 
 
 def test_job_apply_skips_suitability_when_description_is_empty(mocker, easy_applier):
-    class _FakeActions:
-        def __init__(self, _driver):
-            pass
-
-        def move_to_element(self, _element):
-            return self
-
-        def click(self):
-            return self
-
-        def perform(self):
-            return None
-
     mock_job = Job(
         title="Test title",
         company="Test company",
@@ -141,14 +128,46 @@ def test_job_apply_skips_suitability_when_description_is_empty(mocker, easy_appl
     )
 
     easy_applier.driver.current_url = "https://www.linkedin.com/jobs/view/1234"
-    mocker.patch('coapplyer_ai.linkedIn_easy_applier.ActionChains', _FakeActions)
     mocker.patch.object(easy_applier, '_find_easy_apply_button', return_value=mocker.Mock())
     mocker.patch.object(easy_applier, '_get_job_description', return_value="")
     mocker.patch.object(easy_applier, '_get_job_recruiter', return_value="")
     mocker.patch.object(easy_applier, '_fill_application_form')
+    mocker.patch.object(easy_applier.browser, 'click')
 
     easy_applier.gpt_answerer.is_job_suitable.return_value = False
     status = easy_applier.job_apply(mock_job)
 
     easy_applier.gpt_answerer.is_job_suitable.assert_not_called()
     assert status == CoApplyerAIEasyApplier.STATUS_SUBMITTED
+
+
+def test_job_apply_returns_awaiting_confirmation_when_submit_is_blocked(mocker, easy_applier):
+    mock_job = Job(
+        title="Test title",
+        company="Test company",
+        location="Remote",
+        apply_method="",
+        link="https://www.linkedin.com/jobs/view/1234"
+    )
+
+    easy_applier.driver.current_url = "https://www.linkedin.com/jobs/view/1234"
+    mocker.patch.object(easy_applier, '_find_easy_apply_button', return_value=mocker.Mock())
+    mocker.patch.object(easy_applier, '_get_job_description', return_value="Some description")
+    mocker.patch.object(easy_applier, '_get_job_recruiter', return_value="")
+    mocker.patch.object(easy_applier, '_fill_application_form', side_effect=SubmitConfirmationRequired())
+
+    status = easy_applier.job_apply(mock_job)
+
+    assert status == CoApplyerAIEasyApplier.STATUS_AWAITING_HUMAN_CONFIRMATION
+
+
+def test_enter_text_uses_browser_adapter_verification(mocker, easy_applier):
+    element = mock.Mock()
+    browser = mock.Mock()
+    browser.get_element_value.return_value = "Answer"
+    easy_applier.browser = browser
+
+    easy_applier._enter_text(element, "Answer")
+
+    browser.fill_text.assert_called_once_with(element, "Answer")
+    browser.wait_until.assert_called_once()

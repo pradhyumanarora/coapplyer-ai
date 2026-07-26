@@ -7,7 +7,7 @@ import click
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service as ChromeService
 from webdriver_manager.chrome import ChromeDriverManager
-from selenium.common.exceptions import WebDriverException
+from selenium.common.exceptions import WebDriverException, SessionNotCreatedException
 from lib_resume_builder_CoApplyerAI import Resume, FacadeManager, ResumeGenerator, StyleManager
 from typing import Optional
 from constants import PLAIN_TEXT_RESUME_YAML, SECRETS_YAML, WORK_PREFERENCES_YAML
@@ -15,6 +15,8 @@ from src.utils.chrome_utils import chrome_browser_options
 
 from src.job_application_profile import JobApplicationProfile
 from src.logging import logger
+from app_config import BROWSER_ENGINE
+from src.browser_adapters import create_browser_adapter
 
 # Suppress stderr only during specific operations
 original_stderr = sys.stderr
@@ -156,14 +158,54 @@ class FileManager:
         return result
 
 def init_browser() -> webdriver.Chrome:
+    service = ChromeService(ChromeDriverManager().install())
     try:
-        options = chrome_browser_options()
-        service = ChromeService(ChromeDriverManager().install())
+        options = chrome_browser_options(use_profile=True)
+        return webdriver.Chrome(service=service, options=options)
+    except SessionNotCreatedException as e:
+        logger.warning(
+            "Chrome profile launch failed ({}). Retrying with isolated profile.",
+            e,
+        )
+        options = chrome_browser_options(use_profile=False)
         return webdriver.Chrome(service=service, options=options)
     except Exception as e:
         raise RuntimeError(f"Failed to initialize browser: {str(e)}")
 
-def create_and_run_bot(parameters, llm_api_key):
+
+def resolve_browser_engine(use_selenium: bool, configured_engine: str = BROWSER_ENGINE) -> str:
+    return "selenium" if use_selenium else configured_engine
+
+
+def create_browser_runtime(browser_engine: str):
+    normalized_engine = (browser_engine or BROWSER_ENGINE).strip().lower()
+    if normalized_engine == "selenium":
+        browser = init_browser()
+        browser_adapter = create_browser_adapter(normalized_engine, selenium_driver=browser)
+        return browser, browser_adapter
+
+    try:
+        browser_adapter = create_browser_adapter(normalized_engine)
+        return None, browser_adapter
+    except (FileNotFoundError, TimeoutError, OSError) as exc:
+        logger.warning(
+            "Playwright MCP runtime is unavailable ({}); falling back to Selenium.",
+            exc,
+        )
+        browser = init_browser()
+        browser_adapter = create_browser_adapter("selenium", selenium_driver=browser)
+        return browser, browser_adapter
+
+
+def apply_run_profile(parameters: dict, demo: bool) -> dict:
+    if demo:
+        parameters = dict(parameters)
+        parameters["trialJobLimit"] = 1
+        parameters["demoMode"] = True
+    return parameters
+
+def create_and_run_bot(parameters, llm_api_key, browser_engine: str):
+    browser_adapter = None
     try:
         style_manager = StyleManager()
         resume_generator = ResumeGenerator()
@@ -178,9 +220,9 @@ def create_and_run_bot(parameters, llm_api_key):
         
         job_application_profile_object = JobApplicationProfile(plain_text_resume)
         
-        browser = init_browser()
-        login_component = get_authenticator(driver=browser, platform='linkedin')
-        apply_component = CoApplyerAIJobManager(browser)
+        browser, browser_adapter = create_browser_runtime(browser_engine)
+        login_component = get_authenticator(driver=browser, platform='linkedin', browser_adapter=browser_adapter)
+        apply_component = CoApplyerAIJobManager(browser, browser_adapter=browser_adapter)
         gpt_answerer_component = GPTAnswerer(parameters, llm_api_key)
         bot = CoApplyerAIBotFacade(login_component, apply_component)
         bot.set_job_application_profile_and_resume(job_application_profile_object, resume_object)
@@ -197,12 +239,17 @@ def create_and_run_bot(parameters, llm_api_key):
         logger.error(f"WebDriver error occurred: {e}")
     except Exception as e:
         raise RuntimeError(f"Error running the bot: {str(e)}")
+    finally:
+        if browser_adapter is not None:
+            browser_adapter.close()
 
 
 @click.command()
 @click.option('--resume', type=click.Path(exists=True, file_okay=True, dir_okay=False, path_type=Path), help="Path to the resume PDF file")
 @click.option('--collect', is_flag=True, help="Only collects data job information into data.json file")
-def main(collect: bool = False, resume: Optional[Path] = None):
+@click.option('--selenium', is_flag=True, help="Use Selenium instead of the default Playwright MCP browser engine")
+@click.option('--demo', is_flag=True, help="Run a fast one-job Playwright demo path")
+def main(collect: bool = False, resume: Optional[Path] = None, selenium: bool = False, demo: bool = False):
     try:
         data_folder = Path("data_folder")
         secrets_file, config_file, plain_text_resume_file, output_folder = FileManager.validate_data_folder(data_folder)
@@ -213,8 +260,13 @@ def main(collect: bool = False, resume: Optional[Path] = None):
         parameters['uploads'] = FileManager.file_paths_to_dict(resume, plain_text_resume_file)
         parameters['outputFileDirectory'] = output_folder
         parameters['collectMode'] = collect
+        parameters = apply_run_profile(parameters, demo)
+
+        if demo:
+            logger.info("Demo mode enabled: one job attempt, Playwright default, human-confirmed submit")
         
-        create_and_run_bot(parameters, llm_api_key)
+        browser_engine = resolve_browser_engine(selenium)
+        create_and_run_bot(parameters, llm_api_key, browser_engine)
     except ConfigError as ce:
         logger.error(f"Configuration error: {str(ce)}")
         logger.error(f"Refer to the configuration guide for troubleshooting: {str(ce)}")
