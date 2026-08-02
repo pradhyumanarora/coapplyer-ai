@@ -1,21 +1,17 @@
+from pathlib import Path
+
 import pytest
-from coapplyer_ai.job_manager import CoApplyerAIJobManager
-from src.regex_utils import generate_regex_patterns_for_blacklisting
 
-apply_component = CoApplyerAIJobManager(None) # For this test we dont need the web driver
+from src.coapplyer_ai.job_filter import JobFilter
 
-# Test title, company and location blacklist definition
-title_blacklist = ["Data Engineer", "Software Engineer"]
-company_blacklist = ["ABC Corp", "XYZ Inc"]
-location_blacklist = ["Brazil"]
-seen_jobs = set()
-
-# Creating regex patterns
-apply_component.title_blacklist_patterns = generate_regex_patterns_for_blacklisting(title_blacklist)
-apply_component.company_blacklist_patterns = generate_regex_patterns_for_blacklisting(company_blacklist)
-apply_component.location_blacklist_patterns = generate_regex_patterns_for_blacklisting(location_blacklist)
-apply_component.seen_jobs = seen_jobs
-apply_component.seen_jobs.add("link14") # added link for 'seen link' test
+job_filter = JobFilter(
+    company_blacklist=["ABC Corp", "XYZ Inc"],
+    title_blacklist=["Data Engineer", "Software Engineer"],
+    location_blacklist=["Brazil"],
+    output_file_directory=Path("."),
+    seen_jobs={"link14"},
+    apply_once_at_company=False,
+)
 
 test_cases = [
     # Blacklist matches for "Data Engineer" in various forms
@@ -50,6 +46,6 @@ test_cases = [
 
 @pytest.mark.parametrize("job_title, company, link, job_location, expected_output", test_cases)
 def test_is_blacklisted(job_title, company, link, job_location, expected_output):
-    actual_output = apply_component.is_blacklisted(job_title, company, link, job_location)
+    actual_output = job_filter.is_blacklisted(job_title, company, link, job_location)
 
     assert actual_output == expected_output, f"Failed for case: {job_title} at {company} in {job_location} (link: {link})"

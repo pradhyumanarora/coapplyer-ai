@@ -17,7 +17,7 @@ from langchain_core.prompt_values import StringPromptValue
 from langchain_core.prompts import ChatPromptTemplate
 from Levenshtein import distance
 
-import coapplyer_ai.llm.prompts as prompts
+import src.coapplyer_ai.llm.prompts as prompts
 from app_config import JOB_SUITABILITY_SCORE
 from constants import (
     AVAILABILITY,

@@ -101,10 +101,11 @@ class PlaywrightMcpBrowserAdapter(BrowserAdapter):
         return [PlaywrightMcpLocator(self.session, selector, index) for index in range(count)]
 
     def find_element(self, by: str, value: str) -> Any:
+        from selenium.common.exceptions import NoSuchElementException as _NSE
         selector = self._selector_from_locator(by, value)
         matches = list(self.find_elements(by, value))
         if not matches:
-            raise LookupError(f"No element found for {by}={value}")
+            raise _NSE(f"No element found for {by}={value}")
         return matches[0]
 
     def click(self, element: Any, hover_first: bool = False) -> None:

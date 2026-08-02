@@ -133,6 +133,12 @@ Fastest onboarding/demo path:
 .\.venv\Scripts\python.exe .\main.py --resume "C:\Users\pradarora\MyFiles\Auto_Jobs_Applier_AI_Agent\PradhyumanResume.pdf" --selenium
 ```
 
+Selenium runs stop at the Review step and prompt in the terminal before submitting. Add `--autoComplete` to submit without pausing.
+
+```powershell
+.\.venv\Scripts\python.exe .\main.py --resume "C:\Users\pradarora\MyFiles\Auto_Jobs_Applier_AI_Agent\PradhyumanResume.pdf" --selenium --autoComplete
+```
+
 ## Recommended first run
 
 Use demo mode first so you can verify the full browser chain without attempting multiple applications.

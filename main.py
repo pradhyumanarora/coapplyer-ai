@@ -14,16 +14,16 @@ from lib_resume_builder_CoApplyerAI import Resume, FacadeManager, ResumeGenerato
 from constants import PLAIN_TEXT_RESUME_YAML, SECRETS_YAML, WORK_PREFERENCES_YAML
 from src.job_application_profile import JobApplicationProfile
 from src.logging import logger
-from app_config import BROWSER_ENGINE
+from app_config import BROWSER_ENGINE, REQUIRE_HUMAN_CONFIRMATION_FOR_SUBMIT
 from src.browser_adapters import create_browser_adapter
 
 # Add the src directory to the Python path
 sys.path.append(str(Path(__file__).resolve().parent / 'src'))
 
-from coapplyer_ai.authenticator import get_authenticator
-from coapplyer_ai.bot_facade import CoApplyerAIBotFacade
-from coapplyer_ai.job_manager import CoApplyerAIJobManager
-from coapplyer_ai.llm.llm_manager import GPTAnswerer
+from src.coapplyer_ai.authenticator import get_authenticator
+from src.coapplyer_ai.bot_facade import CoApplyerAIBotFacade
+from src.coapplyer_ai.job_manager import CoApplyerAIJobManager
+from src.coapplyer_ai.llm.llm_manager import GPTAnswerer
 
 
 class ConfigError(Exception):
@@ -208,6 +208,16 @@ def resolve_browser_engine(use_selenium: bool, configured_engine: str = BROWSER_
     return "selenium" if use_selenium else configured_engine
 
 
+def resolve_submit_confirmation(browser_engine: str, auto_complete: bool,
+                                configured: bool = REQUIRE_HUMAN_CONFIRMATION_FOR_SUBMIT) -> bool:
+    """Selenium runs pause at the Review step unless --autoComplete is passed."""
+    if auto_complete:
+        return False
+    if (browser_engine or "").strip().lower() == "selenium":
+        return True
+    return configured
+
+
 def create_browser_runtime(browser_engine: str):
     normalized_engine = (browser_engine or BROWSER_ENGINE).strip().lower()
 
@@ -284,7 +294,9 @@ def create_and_run_bot(parameters, llm_api_key, browser_engine: str):
 @click.option('--collect', is_flag=True, help="Only collect job data into data.json (no applications)")
 @click.option('--selenium', is_flag=True, help="Use Selenium + ChromeDriver instead of Playwright MCP")
 @click.option('--demo', is_flag=True, help="Demo mode: apply to one job only")
-def main(collect: bool = False, resume: Optional[Path] = None, selenium: bool = False, demo: bool = False):
+@click.option('--autoComplete', 'auto_complete', is_flag=True, help="Submit without pausing at the Review step")
+def main(collect: bool = False, resume: Optional[Path] = None, selenium: bool = False, demo: bool = False,
+         auto_complete: bool = False):
     try:
         data_folder = Path("data_folder")
         secrets_file, config_file, plain_text_resume_file, output_folder = FileManager.validate_data_folder(data_folder)
@@ -301,6 +313,9 @@ def main(collect: bool = False, resume: Optional[Path] = None, selenium: bool = 
             logger.info("Demo mode enabled: one job attempt, Playwright default, human-confirmed submit")
 
         browser_engine = resolve_browser_engine(selenium)
+        parameters['requireSubmitConfirmation'] = resolve_submit_confirmation(browser_engine, auto_complete)
+        if parameters['requireSubmitConfirmation']:
+            logger.info("Submit confirmation enabled: the run pauses at the Review step before submitting")
         create_and_run_bot(parameters, llm_api_key, browser_engine)
     except ConfigError as ce:
         logger.error(f"Configuration error: {str(ce)}")

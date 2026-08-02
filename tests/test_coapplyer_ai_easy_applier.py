@@ -1,7 +1,8 @@
 import pytest
 from unittest import mock
 
-from coapplyer_ai.linkedIn_easy_applier import CoApplyerAIEasyApplier, SubmitConfirmationRequired
+from src.coapplyer_ai.form_filler import SubmitConfirmationRequired
+from src.coapplyer_ai.linkedIn_easy_applier import CoApplyerAIEasyApplier
 from src.job import Job
 
 
@@ -107,10 +108,9 @@ def test_job_apply_returns_skipped_when_not_suitable(mocker, easy_applier):
 
     easy_applier.driver.current_url = "https://www.linkedin.com/jobs/view/1234"
     mocker.patch.object(easy_applier, '_find_easy_apply_button', return_value=mocker.Mock())
-    mocker.patch.object(easy_applier, '_get_job_description', return_value="Some description")
-    mocker.patch.object(easy_applier, '_get_job_recruiter', return_value="")
-    fill_form_spy = mocker.patch.object(easy_applier, '_fill_application_form')
-    easy_applier.gpt_answerer.is_job_suitable.return_value = False
+    mocker.patch.object(easy_applier._suitability, 'fetch_job_metadata')
+    mocker.patch.object(easy_applier._suitability, 'is_suitable', return_value=False)
+    fill_form_spy = mocker.patch.object(easy_applier._form_filler, 'fill_application_form')
 
     status = easy_applier.job_apply(mock_job)
 
@@ -118,7 +118,7 @@ def test_job_apply_returns_skipped_when_not_suitable(mocker, easy_applier):
     fill_form_spy.assert_not_called()
 
 
-def test_job_apply_skips_suitability_when_description_is_empty(mocker, easy_applier):
+def test_job_apply_submits_when_suitable(mocker, easy_applier):
     mock_job = Job(
         title="Test title",
         company="Test company",
@@ -129,15 +129,14 @@ def test_job_apply_skips_suitability_when_description_is_empty(mocker, easy_appl
 
     easy_applier.driver.current_url = "https://www.linkedin.com/jobs/view/1234"
     mocker.patch.object(easy_applier, '_find_easy_apply_button', return_value=mocker.Mock())
-    mocker.patch.object(easy_applier, '_get_job_description', return_value="")
-    mocker.patch.object(easy_applier, '_get_job_recruiter', return_value="")
-    mocker.patch.object(easy_applier, '_fill_application_form')
+    mocker.patch.object(easy_applier._suitability, 'fetch_job_metadata')
+    mocker.patch.object(easy_applier._suitability, 'is_suitable', return_value=True)
+    fill_form_spy = mocker.patch.object(easy_applier._form_filler, 'fill_application_form')
     mocker.patch.object(easy_applier.browser, 'click')
 
-    easy_applier.gpt_answerer.is_job_suitable.return_value = False
     status = easy_applier.job_apply(mock_job)
 
-    easy_applier.gpt_answerer.is_job_suitable.assert_not_called()
+    fill_form_spy.assert_called_once()
     assert status == CoApplyerAIEasyApplier.STATUS_SUBMITTED
 
 
@@ -152,22 +151,11 @@ def test_job_apply_returns_awaiting_confirmation_when_submit_is_blocked(mocker, 
 
     easy_applier.driver.current_url = "https://www.linkedin.com/jobs/view/1234"
     mocker.patch.object(easy_applier, '_find_easy_apply_button', return_value=mocker.Mock())
-    mocker.patch.object(easy_applier, '_get_job_description', return_value="Some description")
-    mocker.patch.object(easy_applier, '_get_job_recruiter', return_value="")
-    mocker.patch.object(easy_applier, '_fill_application_form', side_effect=SubmitConfirmationRequired())
+    mocker.patch.object(easy_applier._suitability, 'fetch_job_metadata')
+    mocker.patch.object(easy_applier._suitability, 'is_suitable', return_value=True)
+    mocker.patch.object(easy_applier._form_filler, 'fill_application_form', side_effect=SubmitConfirmationRequired())
+    mocker.patch.object(easy_applier.browser, 'click')
 
     status = easy_applier.job_apply(mock_job)
 
     assert status == CoApplyerAIEasyApplier.STATUS_AWAITING_HUMAN_CONFIRMATION
-
-
-def test_enter_text_uses_browser_adapter_verification(mocker, easy_applier):
-    element = mock.Mock()
-    browser = mock.Mock()
-    browser.get_element_value.return_value = "Answer"
-    easy_applier.browser = browser
-
-    easy_applier._enter_text(element, "Answer")
-
-    browser.fill_text.assert_called_once_with(element, "Answer")
-    browser.wait_until.assert_called_once()

@@ -731,6 +731,7 @@ class PlaywrightMcpStdioSession:
                     payload[key] = value
                     continue
                 aliases = {
+                    "function": ["function", "fn", "code", "expression", "script"],
                     "code": ["code", "expression", "script"],
                     "url": ["url", "uri", "href"],
                     "selector": ["selector", "element", "locator"],
@@ -760,4 +761,7 @@ class PlaywrightMcpStdioSession:
         return result
 
     def evaluate(self, code: str) -> Any:
-        return self.call_tool("browser_evaluate", "evaluate", code=code)
+        # browser_evaluate requires a JS function string, not raw code.
+        # Wrap code in an IIFE-style arrow function.
+        wrapped = f"() => {{ {code} }}"
+        return self.call_tool("browser_evaluate", "evaluate", function=wrapped)

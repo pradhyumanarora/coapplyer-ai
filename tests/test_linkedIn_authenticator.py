@@ -4,7 +4,7 @@ import pytest
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.wait import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from coapplyer_ai.authenticator import CoApplyerAIAuthenticator, LinkedInAuthenticator, get_authenticator
+from src.coapplyer_ai.authenticator import CoApplyerAIAuthenticator, LinkedInAuthenticator, get_authenticator
 from selenium.common.exceptions import NoSuchElementException, TimeoutException
 
 

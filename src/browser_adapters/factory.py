@@ -38,7 +38,7 @@ def create_browser_adapter(
         if selenium_driver is None:
             raise ValueError("selenium_driver is required when engine='selenium'")
         # Lazy import: keeps Playwright-only path free of Selenium
-        from src.browser_adapters.selenium.adapter import SeleniumBrowserAdapter
+        from src.browser_adapters.selenium_adapter import SeleniumBrowserAdapter
         return SeleniumBrowserAdapter(selenium_driver)
 
     # ------------------------------------------------------------------

@@ -70,3 +70,16 @@ def test_apply_run_profile_noop_when_not_demo():
     updated = main.apply_run_profile(parameters, demo=False)
 
     assert updated is parameters
+
+
+def test_resolve_submit_confirmation_selenium_without_auto_complete():
+    assert main.resolve_submit_confirmation("selenium", auto_complete=False, configured=False) is True
+
+
+def test_resolve_submit_confirmation_auto_complete_skips_review_pause():
+    assert main.resolve_submit_confirmation("selenium", auto_complete=True, configured=True) is False
+
+
+def test_resolve_submit_confirmation_playwright_uses_configured_value():
+    assert main.resolve_submit_confirmation("playwright", auto_complete=False, configured=False) is False
+    assert main.resolve_submit_confirmation("playwright", auto_complete=False, configured=True) is True

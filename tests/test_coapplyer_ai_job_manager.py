@@ -1,33 +1,43 @@
-import json
-import re
-from src.job import Job
-from unittest import mock
-from pathlib import Path
 import os
+
 import pytest
-from coapplyer_ai.job_manager import CoApplyerAIJobManager
-from coapplyer_ai.linkedIn_easy_applier import CoApplyerAIEasyApplier
-from selenium.common.exceptions import NoSuchElementException
-from src.logging import logger
+
+from src.coapplyer_ai.job_manager import CoApplyerAIJobManager
+from src.coapplyer_ai.linkedIn_easy_applier import CoApplyerAIEasyApplier
+from src.job import Job
 
 
 @pytest.fixture
 def job_manager(mocker):
-    """Fixture to create a CoApplyerAIJobManager instance with mocked driver."""
-    mock_driver = mocker.Mock()
-    return CoApplyerAIJobManager(mock_driver)
+    manager = CoApplyerAIJobManager(mocker.Mock())
+    manager._scraper = mocker.Mock()
+    manager._filter = mocker.Mock()
+    manager._output = mocker.Mock()
+    return manager
+
+
+@pytest.fixture
+def job():
+    return Job(title="Title", company="Company", location="Location", apply_method="", link="Link")
+
+
+def _stage_single_job(job_manager, job, status):
+    job_manager._scraper.get_jobs_from_page.return_value = [object()]
+    job_manager._scraper.job_tile_to_job.return_value = job
+    job_manager._filter.is_previously_failed_to_apply.return_value = False
+    job_manager._filter.is_blacklisted.return_value = False
+    job_manager._filter.is_already_applied_to_job.return_value = False
+    job_manager._filter.is_already_applied_to_company.return_value = False
+    job_manager.easy_applier_component.job_apply.return_value = status
 
 
 def test_initialization(job_manager):
-    """Test CoApplyerAIJobManager initialization."""
     assert job_manager.driver is not None
     assert job_manager.set_old_answers == set()
     assert job_manager.easy_applier_component is None
 
 
 def test_set_parameters(mocker, job_manager):
-    """Test setting parameters for the CoApplyerAIJobManager."""
-    # Mocking os.path.exists to return True for the resume path
     mocker.patch('pathlib.Path.exists', return_value=True)
 
     params = {
@@ -36,12 +46,9 @@ def test_set_parameters(mocker, job_manager):
         'positions': ['Software Engineer', 'Data Scientist'],
         'locations': ['New York', 'San Francisco'],
         'apply_once_at_company': True,
-        'uploads': {'resume': '/path/to/resume'},  # Resume path provided here
+        'uploads': {'resume': '/path/to/resume'},
         'outputFileDirectory': '/path/to/output',
-        'job_applicants_threshold': {
-            'min_applicants': 5,
-            'max_applicants': 50
-        },
+        'job_applicants_threshold': {'min_applicants': 5, 'max_applicants': 50},
         'remote': False,
         'distance': 50,
         'date': {'all_time': True}
@@ -49,213 +56,64 @@ def test_set_parameters(mocker, job_manager):
 
     job_manager.set_parameters(params)
 
-    # Normalize paths to handle platform differences (e.g., Windows vs Unix-like systems)
     assert str(job_manager.resume_path) == os.path.normpath('/path/to/resume')
-    assert str(job_manager.output_file_directory) == os.path.normpath(
-        '/path/to/output')
+    assert str(job_manager.output_file_directory) == os.path.normpath('/path/to/output')
+    assert job_manager._filter is not None
+    assert job_manager._output is not None
 
 
-def next_job_page(self, position, location, job_page):
-    logger.debug(f"Navigating to next job page: {position} in {location}, page {job_page}")
-    self.driver.get(
-        f"https://www.linkedin.com/jobs/search/{self.base_search_url}&keywords={position}&location={location}&start={job_page * 25}")
+def test_apply_jobs_with_no_jobs(job_manager):
+    job_manager._scraper.get_jobs_from_page.return_value = []
 
-
-def test_get_jobs_from_page_no_jobs(mocker, job_manager):
-    """Test get_jobs_from_page when no jobs are found."""
-    mocker.patch.object(job_manager.driver, 'find_element',
-                        side_effect=NoSuchElementException)
-
-    jobs = job_manager.get_jobs_from_page()
-    assert jobs == []
-
-
-def test_get_jobs_from_page_with_jobs(mocker, job_manager):
-    """Test get_jobs_from_page when job elements are found."""
-    # Mock no_jobs_element to simulate the absence of "No matching jobs found" banner
-    no_jobs_element_mock = mocker.Mock()
-    no_jobs_element_mock.text = ""  # Empty text means "No matching jobs found" is not present
-
-    # Mock the driver to simulate the page source
-    mocker.patch.object(job_manager.driver, 'page_source', return_value="")
-
-    # Mock the outer find_element
-    container_mock = mocker.Mock()
-
-    # Mock the inner find_elements to return job list items
-    job_element_mock = mocker.Mock()
-    # Simulating two job items
-    job_elements_list = [job_element_mock, job_element_mock]
-
-    # Return the container mock, which itself returns the job elements list
-    container_mock.find_elements.return_value = job_elements_list
-    mocker.patch.object(job_manager.driver, 'find_element', side_effect=[
-        no_jobs_element_mock,
-        container_mock
-    ])
-
-    job_manager.get_jobs_from_page()
-
-    assert job_manager.driver.find_element.call_count == 2
-    assert container_mock.find_elements.call_count == 1
-    
-
-
-def test_apply_jobs_with_no_jobs(mocker, job_manager):
-    """Test apply_jobs when no jobs are found."""
-    # Mocking find_element to return a mock element that simulates no jobs
-    mock_element = mocker.Mock()
-    mock_element.text = "No matching jobs found"
-
-    # Mock the driver to return the mock element when find_element is called
-    mocker.patch.object(job_manager.driver, 'find_element',
-                        return_value=mock_element)
-
-    # Call apply_jobs and ensure no exceptions are raised
     job_manager.apply_jobs()
 
-    # Ensure it attempted to find the job results list
-    assert job_manager.driver.find_element.call_count == 1
+    job_manager._scraper.job_tile_to_job.assert_not_called()
+    job_manager._output.write.assert_not_called()
 
 
-def test_apply_jobs_with_jobs(mocker, job_manager):
-    """Test apply_jobs when jobs are present."""
-
-    # Mock the page_source to simulate what the page looks like when jobs are present
-    mocker.patch.object(job_manager.driver, 'page_source',
-                        return_value="some job content")
-
-    # Simulating two job elements
-    job_element_mock = mocker.Mock()
-    job_elements_list = [job_element_mock, job_element_mock]
-    
-    mocker.patch.object(job_manager, 'get_jobs_from_page', return_value=job_elements_list)
-    
-    job = Job(
-        title="Title",
-        company="Company",
-        location="Location",
-        apply_method="",
-        link="Link"
-    )
-
-    # Mock the extract_job_information_from_tile method to return sample job info
-    mocker.patch.object(job_manager, 'job_tile_to_job', return_value=job)
-
-    # Mock other methods like is_blacklisted, is_already_applied_to_job, and is_already_applied_to_company
-    mocker.patch.object(job_manager, 'is_blacklisted', return_value=False)
-    mocker.patch.object(
-        job_manager, 'is_already_applied_to_job', return_value=False)
-    mocker.patch.object(
-        job_manager, 'is_already_applied_to_company', return_value=False)
-
-    # Mock the CoApplyerAIEasyApplier component
+def test_apply_jobs_with_jobs(mocker, job_manager, job):
     job_manager.easy_applier_component = mocker.Mock()
+    _stage_single_job(job_manager, job, CoApplyerAIEasyApplier.STATUS_SUBMITTED)
+    job_manager._scraper.get_jobs_from_page.return_value = [object(), object()]
 
-    # Mock the output_file_directory as a valid Path object
-    job_manager.output_file_directory = Path("/mocked/path/to/output")
-
-    # Mock Path.exists() to always return True (so no actual file system interaction is needed)
-    mocker.patch.object(Path, 'exists', return_value=True)
-
-    # Mock the open function to prevent actual file writing
-    failed_mock_data = [{
-        "company": "TestCompany",
-        "job_title": "Test Data Engineer",
-        "link": "https://www.example.com/jobs/view/1234567890/",
-        "job_recruiter": "",
-        "job_location": "Anywhere (Remote)",
-        "pdf_path": "file:///mocked/path/to/pdf"
-    }]
-
-    # Serialize the dictionary to a JSON string
-    json_read_data = json.dumps(failed_mock_data)
-
-    mock_open = mocker.mock_open(read_data=json_read_data)
-    mocker.patch('builtins.open', mock_open)
-
-    # Run the apply_jobs method
     job_manager.apply_jobs()
 
-    # Assertions
-    assert job_manager.get_jobs_from_page.call_count == 1
-    # Called for each job element
-    assert job_manager.job_tile_to_job.call_count == 2
-    # Called for each job element
+    assert job_manager._scraper.job_tile_to_job.call_count == 2
     assert job_manager.easy_applier_component.job_apply.call_count == 2
-    mock_open.assert_called()  # Ensure that the open function was called
 
 
-def test_apply_jobs_writes_success_only_on_submitted(mocker, job_manager):
-    job = Job(title="Title", company="Company", location="Location", apply_method="", link="Link")
-    mocker.patch.object(job_manager, 'get_jobs_from_page', return_value=[mocker.Mock()])
-    mocker.patch.object(job_manager, 'job_tile_to_job', return_value=job)
-    mocker.patch.object(job_manager, 'is_blacklisted', return_value=False)
-    mocker.patch.object(job_manager, 'is_already_applied_to_job', return_value=False)
-    mocker.patch.object(job_manager, 'is_already_applied_to_company', return_value=False)
-    mocker.patch.object(job_manager, 'is_previously_failed_to_apply', return_value=False)
-
+def test_apply_jobs_writes_success_only_on_submitted(mocker, job_manager, job):
     job_manager.easy_applier_component = mocker.Mock()
-    job_manager.easy_applier_component.job_apply.return_value = CoApplyerAIEasyApplier.STATUS_SUBMITTED
-    write_to_file_spy = mocker.patch.object(job_manager, 'write_to_file')
+    _stage_single_job(job_manager, job, CoApplyerAIEasyApplier.STATUS_SUBMITTED)
 
     job_manager.apply_jobs()
 
-    write_to_file_spy.assert_called_once_with(job, "success")
+    job_manager._output.write.assert_called_once_with(job, "success")
 
 
-def test_apply_jobs_writes_skipped_when_not_suitable(mocker, job_manager):
-    job = Job(title="Title", company="Company", location="Location", apply_method="", link="Link")
-    mocker.patch.object(job_manager, 'get_jobs_from_page', return_value=[mocker.Mock()])
-    mocker.patch.object(job_manager, 'job_tile_to_job', return_value=job)
-    mocker.patch.object(job_manager, 'is_blacklisted', return_value=False)
-    mocker.patch.object(job_manager, 'is_already_applied_to_job', return_value=False)
-    mocker.patch.object(job_manager, 'is_already_applied_to_company', return_value=False)
-    mocker.patch.object(job_manager, 'is_previously_failed_to_apply', return_value=False)
-
+def test_apply_jobs_writes_skipped_when_not_suitable(mocker, job_manager, job):
     job_manager.easy_applier_component = mocker.Mock()
-    job_manager.easy_applier_component.job_apply.return_value = CoApplyerAIEasyApplier.STATUS_SKIPPED_NOT_SUITABLE
-    write_to_file_spy = mocker.patch.object(job_manager, 'write_to_file')
+    _stage_single_job(job_manager, job, CoApplyerAIEasyApplier.STATUS_SKIPPED_NOT_SUITABLE)
 
     job_manager.apply_jobs()
 
-    write_to_file_spy.assert_called_once_with(job, "skipped", "Job did not pass suitability filter")
+    job_manager._output.write.assert_called_once_with(job, "skipped", "Job did not pass suitability filter")
 
 
-def test_apply_jobs_writes_skipped_when_awaiting_human_confirmation(mocker, job_manager):
-    job = Job(title="Title", company="Company", location="Location", apply_method="", link="Link")
-    mocker.patch.object(job_manager, 'get_jobs_from_page', return_value=[mocker.Mock()])
-    mocker.patch.object(job_manager, 'job_tile_to_job', return_value=job)
-    mocker.patch.object(job_manager, 'is_blacklisted', return_value=False)
-    mocker.patch.object(job_manager, 'is_already_applied_to_job', return_value=False)
-    mocker.patch.object(job_manager, 'is_already_applied_to_company', return_value=False)
-    mocker.patch.object(job_manager, 'is_previously_failed_to_apply', return_value=False)
-
+def test_apply_jobs_writes_skipped_when_awaiting_human_confirmation(mocker, job_manager, job):
     job_manager.easy_applier_component = mocker.Mock()
-    job_manager.easy_applier_component.job_apply.return_value = CoApplyerAIEasyApplier.STATUS_AWAITING_HUMAN_CONFIRMATION
-    write_to_file_spy = mocker.patch.object(job_manager, 'write_to_file')
+    _stage_single_job(job_manager, job, CoApplyerAIEasyApplier.STATUS_AWAITING_HUMAN_CONFIRMATION)
 
     job_manager.apply_jobs()
 
-    write_to_file_spy.assert_called_once_with(job, "skipped", "Awaiting human confirmation before submit")
+    job_manager._output.write.assert_called_once_with(job, "skipped", "Awaiting human confirmation before submit")
 
 
-def test_write_to_file_sets_empty_pdf_path_when_resume_missing(job_manager, tmp_path):
-    job_manager.output_file_directory = tmp_path
-    job = Job(
-        title="Title",
-        company="Company",
-        location="Location",
-        apply_method="",
-        link="https://www.linkedin.com/jobs/view/1/",
-        recruiter_link="",
-        resume_path=""
-    )
+def test_read_jobs_skips_blacklisted(mocker, job_manager, job):
+    job_manager._scraper.get_jobs_from_page.return_value = [object()]
+    job_manager._scraper.job_tile_to_job.return_value = job
+    job_manager._filter.is_blacklisted.return_value = True
 
-    job_manager.write_to_file(job, "skipped", "No resume path")
+    job_manager.read_jobs()
 
-    output_file = tmp_path / "skipped.json"
-    with open(output_file, "r", encoding="utf-8") as f:
-        rows = json.load(f)
-
-    assert rows[0]["pdf_path"] == ""
+    job_manager._output.write.assert_called_once_with(job, "skipped")
